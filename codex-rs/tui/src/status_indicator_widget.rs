@@ -196,6 +196,21 @@ impl Renderable for StatusIndicatorWidget {
     }
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.render_internal(area, buf, false);
+    }
+}
+
+impl StatusIndicatorWidget {
+    pub(crate) fn render_with_queue_hint(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        show_queue_hint: bool,
+    ) {
+        self.render_internal(area, buf, show_queue_hint);
+    }
+
+    fn render_internal(&self, area: Rect, buf: &mut Buffer, show_queue_hint: bool) {
         if area.is_empty() {
             return;
         }
@@ -220,7 +235,21 @@ impl Renderable for StatusIndicatorWidget {
             spans.extend(vec![
                 format!("({pretty_elapsed} • ").dim(),
                 key_hint::plain(KeyCode::Esc).into(),
-                " to interrupt)".dim(),
+            ]);
+            if show_queue_hint {
+                spans.extend(vec![
+                    " to interrupt • ".dim(),
+                    key_hint::plain(KeyCode::Tab).into(),
+                    " to queue message)".dim(),
+                ]);
+            } else {
+                spans.push(" to interrupt)".dim());
+            }
+        } else if show_queue_hint {
+            spans.extend(vec![
+                format!("({pretty_elapsed} • ").dim(),
+                key_hint::plain(KeyCode::Tab).into(),
+                " to queue message)".dim(),
             ]);
         } else {
             spans.push(format!("({pretty_elapsed})").dim());

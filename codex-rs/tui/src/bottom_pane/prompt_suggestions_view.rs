@@ -364,7 +364,7 @@ fn prompt_suggestions_hint_line(enabled: bool, has_suggestion: bool) -> Line<'st
     spans.push(if enabled { " toggle / " } else { " enable / " }.into());
     spans.push(key_hint::plain(KeyCode::Char('a')).into());
     spans.push(" auto-run / ".into());
-    spans.push("0-9".dim().into());
+    spans.push("0-9".dim());
     spans.push(" depth / ".into());
     spans.push(key_hint::plain(KeyCode::Char('+')).into());
     spans.push(" / ".into());

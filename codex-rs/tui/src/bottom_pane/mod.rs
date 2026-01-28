@@ -127,6 +127,22 @@ pub(crate) use list_selection_view::SelectionAction;
 pub(crate) use list_selection_view::SelectionItem;
 pub(crate) use prompt_suggestions_view::PromptSuggestionsView;
 
+struct StatusIndicatorWithQueueHint<'a> {
+    status: &'a StatusIndicatorWidget,
+    show_queue_hint: bool,
+}
+
+impl Renderable for StatusIndicatorWithQueueHint<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.status
+            .render_with_queue_hint(area, buf, self.show_queue_hint);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        self.status.desired_height(width)
+    }
+}
+
 /// Pane displayed in the lower half of the chat UI.
 ///
 /// This is the owning container for the prompt input (`ChatComposer`) and the view stack
@@ -800,7 +816,14 @@ impl BottomPane {
         } else {
             let mut flex = FlexRenderable::new();
             if let Some(status) = &self.status {
-                flex.push(0, RenderableItem::Borrowed(status));
+                let show_queue_hint = self.is_task_running && !self.composer.is_empty();
+                flex.push(
+                    0,
+                    RenderableItem::Owned(Box::new(StatusIndicatorWithQueueHint {
+                        status,
+                        show_queue_hint,
+                    })),
+                );
             }
             if !self.unified_exec_footer.is_empty() {
                 flex.push(0, RenderableItem::Borrowed(&self.unified_exec_footer));
