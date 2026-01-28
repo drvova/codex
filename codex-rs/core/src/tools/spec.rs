@@ -30,9 +30,10 @@ const MCP_SEARCH_TOOL_NAME_NORMALIZED: &str = "mcpsearch";
 pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
-    pub web_search_mode: WebSearchMode,
+    pub web_search_mode: Option<WebSearchMode>,
     pub collab_tools: bool,
     pub collaboration_modes_tools: bool,
+    pub request_rule_enabled: bool,
     pub experimental_supported_tools: Vec<String>,
     pub mcp_search_enabled: bool,
 }
@@ -40,7 +41,7 @@ pub(crate) struct ToolsConfig {
 pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) model_info: &'a ModelInfo,
     pub(crate) features: &'a Features,
-    pub(crate) web_search_mode: WebSearchMode,
+    pub(crate) web_search_mode: Option<WebSearchMode>,
     pub(crate) disallowed_tools: &'a [String],
 }
 
@@ -55,6 +56,7 @@ impl ToolsConfig {
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_collab_tools = features.enabled(Feature::Collab);
         let include_collaboration_modes_tools = features.enabled(Feature::CollaborationModes);
+        let request_rule_enabled = features.enabled(Feature::RequestRule);
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -96,6 +98,7 @@ impl ToolsConfig {
             web_search_mode: *web_search_mode,
             collab_tools: include_collab_tools,
             collaboration_modes_tools: include_collaboration_modes_tools,
+            request_rule_enabled,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             mcp_search_enabled,
         }
@@ -158,8 +161,50 @@ impl From<JsonSchema> for AdditionalProperties {
     }
 }
 
-fn create_exec_command_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+fn create_approval_parameters(include_prefix_rule: bool) -> BTreeMap<String, JsonSchema> {
+    let mut properties = BTreeMap::from([
+        (
+            "sandbox_permissions".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
+                        .to_string(),
+                ),
+            },
+        ),
+        (
+            "justification".to_string(),
+            JsonSchema::String {
+                description: Some(
+                    r#"Only set if sandbox_permissions is \"require_escalated\". 
+                    Request approval from the user to run this command outside the sandbox. 
+                    Phrased as a simple question that summarizes the purpose of the 
+                    command as it relates to the task at hand - e.g. 'Do you want to 
+                    fetch and pull the latest version of this git branch?'"#
+                    .to_string(),
+                ),
+            },
+        ),
+    ]);
+
+    if include_prefix_rule {
+        properties.insert(
+            "prefix_rule".to_string(),
+            JsonSchema::Array {
+                items: Box::new(JsonSchema::String { description: None }),
+                description: Some(
+                    r#"Only specify when sandbox_permissions is `require_escalated`. 
+                    Suggest a prefix command pattern that will allow you to fulfill similar requests from the user in the future.
+                    Should be a short but reasonable prefix, e.g. [\"git\", \"pull\"] or [\"uv\", \"run\"] or [\"pytest\"]."#.to_string(),
+                ),
+            });
+    }
+
+    properties
+}
+
+fn create_exec_command_tool(include_prefix_rule: bool) -> ToolSpec {
+    let mut properties = BTreeMap::from([
         (
             "cmd".to_string(),
             JsonSchema::String {
@@ -215,25 +260,8 @@ fn create_exec_command_tool() -> ToolSpec {
                 ),
             },
         ),
-        (
-            "sandbox_permissions".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\"."
-                        .to_string(),
-                ),
-            },
-        ),
-        (
-            "justification".to_string(),
-            JsonSchema::String {
-                description: Some(
-                    "Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command."
-                        .to_string(),
-                ),
-            },
-        ),
     ]);
+    properties.extend(create_approval_parameters(include_prefix_rule));
 
     ToolSpec::Function(ResponsesApiTool {
         name: "exec_command".to_string(),
@@ -296,8 +324,8 @@ fn create_write_stdin_tool() -> ToolSpec {
     })
 }
 
-fn create_shell_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+fn create_shell_tool(include_prefix_rule: bool) -> ToolSpec {
+    let mut properties = BTreeMap::from([
         (
             "command".to_string(),
             JsonSchema::Array {
@@ -317,19 +345,8 @@ fn create_shell_tool() -> ToolSpec {
                 description: Some("The timeout for the command in milliseconds".to_string()),
             },
         ),
-        (
-            "sandbox_permissions".to_string(),
-            JsonSchema::String {
-                description: Some("Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\".".to_string()),
-            },
-        ),
-        (
-            "justification".to_string(),
-            JsonSchema::String {
-                description: Some("Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command.".to_string()),
-            },
-        ),
     ]);
+    properties.extend(create_approval_parameters(include_prefix_rule));
 
     let description  = if cfg!(windows) {
         r#"Runs a Powershell command (Windows) and returns its output. Arguments to `shell` will be passed to CreateProcessW(). Most commands should be prefixed with ["powershell.exe", "-Command"].
@@ -360,8 +377,8 @@ Examples of valid command strings:
     })
 }
 
-fn create_shell_command_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+fn create_shell_command_tool(include_prefix_rule: bool) -> ToolSpec {
+    let mut properties = BTreeMap::from([
         (
             "command".to_string(),
             JsonSchema::String {
@@ -391,19 +408,8 @@ fn create_shell_command_tool() -> ToolSpec {
                 description: Some("The timeout for the command in milliseconds".to_string()),
             },
         ),
-        (
-            "sandbox_permissions".to_string(),
-            JsonSchema::String {
-                description: Some("Sandbox permissions for the command. Set to \"require_escalated\" to request running without sandbox restrictions; defaults to \"use_default\".".to_string()),
-            },
-        ),
-        (
-            "justification".to_string(),
-            JsonSchema::String {
-                description: Some("Only set if sandbox_permissions is \"require_escalated\". 1-sentence explanation of why we want to run this command.".to_string()),
-            },
-        ),
     ]);
+    properties.extend(create_approval_parameters(include_prefix_rule));
 
     let description = if cfg!(windows) {
         r#"Runs a Powershell command (Windows) and returns its output.
@@ -1459,13 +1465,13 @@ pub(crate) fn build_specs(
 
     match &config.shell_type {
         ConfigShellToolType::Default => {
-            builder.push_spec(create_shell_tool());
+            builder.push_spec(create_shell_tool(config.request_rule_enabled));
         }
         ConfigShellToolType::Local => {
             builder.push_spec(ToolSpec::LocalShell {});
         }
         ConfigShellToolType::UnifiedExec => {
-            builder.push_spec(create_exec_command_tool());
+            builder.push_spec(create_exec_command_tool(config.request_rule_enabled));
             builder.push_spec(create_write_stdin_tool());
             builder.register_handler("exec_command", unified_exec_handler.clone());
             builder.register_handler("write_stdin", unified_exec_handler);
@@ -1474,7 +1480,7 @@ pub(crate) fn build_specs(
             // Do nothing.
         }
         ConfigShellToolType::ShellCommand => {
-            builder.push_spec(create_shell_command_tool());
+            builder.push_spec(create_shell_command_tool(config.request_rule_enabled));
         }
     }
 
@@ -1553,17 +1559,17 @@ pub(crate) fn build_specs(
     }
 
     match config.web_search_mode {
-        WebSearchMode::Cached => {
+        Some(WebSearchMode::Cached) => {
             builder.push_spec(ToolSpec::WebSearch {
                 external_web_access: Some(false),
             });
         }
-        WebSearchMode::Live => {
+        Some(WebSearchMode::Live) => {
             builder.push_spec(ToolSpec::WebSearch {
                 external_web_access: Some(true),
             });
         }
-        WebSearchMode::Disabled => {}
+        Some(WebSearchMode::Disabled) | None => {}
     }
 
     builder.push_spec_with_parallel_support(create_view_image_tool(), true);
@@ -1735,7 +1741,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Live,
+            web_search_mode: Some(WebSearchMode::Live),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&config, None, &[]).build();
@@ -1759,7 +1765,7 @@ mod tests {
         // Build expected from the same helpers used by the builder.
         let mut expected: BTreeMap<String, ToolSpec> = BTreeMap::from([]);
         for spec in [
-            create_exec_command_tool(),
+            create_exec_command_tool(false),
             create_write_stdin_tool(),
             PLAN_TOOL.clone(),
             create_request_user_input_tool(),
@@ -1797,7 +1803,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
@@ -1816,7 +1822,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
@@ -1829,7 +1835,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
@@ -1839,7 +1845,7 @@ mod tests {
     fn assert_model_tools(
         model_slug: &str,
         features: &Features,
-        web_search_mode: WebSearchMode,
+        web_search_mode: Option<WebSearchMode>,
         expected_tools: &[&str],
     ) {
         let config = test_config();
@@ -1864,7 +1870,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
@@ -1887,7 +1893,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Live,
+            web_search_mode: Some(WebSearchMode::Live),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
@@ -1908,7 +1914,7 @@ mod tests {
         assert_model_tools(
             "gpt-5-codex",
             &features,
-            WebSearchMode::Cached,
+            Some(WebSearchMode::Cached),
             &[
                 "shell_command",
                 "update_plan",
@@ -1928,7 +1934,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1-codex",
             &features,
-            WebSearchMode::Cached,
+            Some(WebSearchMode::Cached),
             &[
                 "shell_command",
                 "update_plan",
@@ -1949,7 +1955,7 @@ mod tests {
         assert_model_tools(
             "gpt-5-codex",
             &features,
-            WebSearchMode::Live,
+            Some(WebSearchMode::Live),
             &[
                 "exec_command",
                 "write_stdin",
@@ -1971,7 +1977,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1-codex",
             &features,
-            WebSearchMode::Live,
+            Some(WebSearchMode::Live),
             &[
                 "exec_command",
                 "write_stdin",
@@ -1992,7 +1998,7 @@ mod tests {
         assert_model_tools(
             "codex-mini-latest",
             &features,
-            WebSearchMode::Cached,
+            Some(WebSearchMode::Cached),
             &[
                 "local_shell",
                 "update_plan",
@@ -2011,7 +2017,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1-codex-mini",
             &features,
-            WebSearchMode::Cached,
+            Some(WebSearchMode::Cached),
             &[
                 "shell_command",
                 "update_plan",
@@ -2031,7 +2037,7 @@ mod tests {
         assert_model_tools(
             "gpt-5",
             &features,
-            WebSearchMode::Cached,
+            Some(WebSearchMode::Cached),
             &[
                 "shell",
                 "update_plan",
@@ -2050,7 +2056,7 @@ mod tests {
         assert_model_tools(
             "gpt-5.1",
             &features,
-            WebSearchMode::Cached,
+            Some(WebSearchMode::Cached),
             &[
                 "shell_command",
                 "update_plan",
@@ -2070,7 +2076,7 @@ mod tests {
         assert_model_tools(
             "exp-5.1",
             &features,
-            WebSearchMode::Cached,
+            Some(WebSearchMode::Cached),
             &[
                 "exec_command",
                 "write_stdin",
@@ -2092,7 +2098,7 @@ mod tests {
         assert_model_tools(
             "codex-mini-latest",
             &features,
-            WebSearchMode::Live,
+            Some(WebSearchMode::Live),
             &[
                 "exec_command",
                 "write_stdin",
@@ -2114,7 +2120,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Live,
+            web_search_mode: Some(WebSearchMode::Live),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, Some(HashMap::new()), &[]).build();
@@ -2137,7 +2143,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
@@ -2157,7 +2163,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
@@ -2192,7 +2198,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Live,
+            web_search_mode: Some(WebSearchMode::Live),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(
@@ -2288,7 +2294,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
 
@@ -2336,7 +2342,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
 
@@ -2388,7 +2394,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
 
@@ -2469,7 +2475,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
 
@@ -2531,7 +2537,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
 
@@ -2590,7 +2596,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
 
@@ -2651,7 +2657,7 @@ mod tests {
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
 
@@ -2699,7 +2705,7 @@ mod tests {
 
     #[test]
     fn test_shell_tool() {
-        let tool = super::create_shell_tool();
+        let tool = super::create_shell_tool(false);
         let ToolSpec::Function(ResponsesApiTool {
             description, name, ..
         }) = &tool
@@ -2729,7 +2735,7 @@ Examples of valid command strings:
 
     #[test]
     fn test_shell_command_tool() {
-        let tool = super::create_shell_command_tool();
+        let tool = super::create_shell_command_tool(false);
         let ToolSpec::Function(ResponsesApiTool {
             description, name, ..
         }) = &tool
@@ -2768,7 +2774,7 @@ Examples of valid command strings:
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
-            web_search_mode: WebSearchMode::Cached,
+            web_search_mode: Some(WebSearchMode::Cached),
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(
