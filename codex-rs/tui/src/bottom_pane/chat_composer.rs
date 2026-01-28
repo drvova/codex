@@ -2454,7 +2454,6 @@ impl ChatComposer {
             esc_backtrack_hint: self.esc_backtrack_hint,
             use_shift_enter_hint: self.use_shift_enter_hint,
             is_task_running: self.is_task_running,
-            steer_enabled: self.steer_enabled,
             quit_shortcut_key: self.quit_shortcut_key,
             collaboration_modes_enabled: self.collaboration_modes_enabled,
             context_window_percent: self.context_window_percent,
@@ -2868,9 +2867,7 @@ impl Renderable for ChatComposer {
                     | FooterMode::ComposerHasDraft => false,
                 };
                 let show_queue_hint = match footer_props.mode {
-                    FooterMode::ComposerHasDraft => {
-                        footer_props.is_task_running && footer_props.steer_enabled
-                    }
+                    FooterMode::ComposerHasDraft => footer_props.is_task_running,
                     FooterMode::QuitShortcutReminder
                     | FooterMode::ComposerEmpty
                     | FooterMode::ShortcutOverlay
