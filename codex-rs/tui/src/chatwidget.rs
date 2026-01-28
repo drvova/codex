@@ -932,9 +932,7 @@ impl ChatWidget {
         }
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
-        if !had_queued_messages {
-            self.maybe_auto_switch_cycle_collaboration_mode(from_replay);
-        }
+        self.maybe_auto_switch_cycle_collaboration_mode(from_replay, had_queued_messages);
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
             response: last_agent_message.unwrap_or_default(),
@@ -5585,13 +5583,54 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn maybe_auto_switch_cycle_collaboration_mode(&mut self, from_replay: bool) {
-        if from_replay
-            || !self.collaboration_modes_enabled()
-            || !self.collaboration_mask_from_cycle
-            || !self.queued_user_messages.is_empty()
-            || self.active_mode_kind() != ModeKind::Code
-        {
+    fn can_auto_switch_cycle_collaboration_mode(
+        &self,
+        from_replay: bool,
+        had_queued_messages: bool,
+    ) -> bool {
+        let modal_or_popup_active = !self.bottom_pane.no_modal_or_popup_active();
+        let composer_empty = self.bottom_pane.composer_is_empty();
+        let task_running = self.bottom_pane.is_task_running();
+        let queued_messages_empty = self.queued_user_messages.is_empty();
+        let enabled = self.collaboration_modes_enabled();
+        let from_cycle = self.collaboration_mask_from_cycle;
+        let is_code = self.active_mode_kind() == ModeKind::Code;
+        let review_mode = self.is_review_mode;
+        let allowed = !from_replay
+            && !had_queued_messages
+            && enabled
+            && from_cycle
+            && queued_messages_empty
+            && is_code
+            && !review_mode
+            && !task_running
+            && composer_empty
+            && !modal_or_popup_active;
+
+        debug!(
+            from_replay,
+            had_queued_messages,
+            enabled,
+            from_cycle,
+            queued_messages_empty,
+            is_code,
+            review_mode,
+            task_running,
+            composer_empty,
+            modal_or_popup_active,
+            allowed,
+            "auto-switch cycle check"
+        );
+
+        allowed
+    }
+
+    fn maybe_auto_switch_cycle_collaboration_mode(
+        &mut self,
+        from_replay: bool,
+        had_queued_messages: bool,
+    ) {
+        if !self.can_auto_switch_cycle_collaboration_mode(from_replay, had_queued_messages) {
             return;
         }
         if let Some(plan_mask) =

@@ -2232,6 +2232,44 @@ async fn collab_mode_cycle_auto_switches_to_plan_after_code_turn() {
 }
 
 #[tokio::test]
+async fn collab_mode_cycle_auto_switch_blocks_with_composer_text() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.bottom_pane
+        .set_composer_text("draft".to_string(), Vec::new(), Vec::new());
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.bottom_pane
+        .set_composer_text(String::new(), Vec::new(), Vec::new());
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn collab_mode_cycle_auto_switch_blocks_with_popup_active() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.open_review_popup();
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
 async fn collab_mode_explicit_selection_does_not_auto_switch() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);
