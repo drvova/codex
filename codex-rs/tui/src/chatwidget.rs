@@ -2942,7 +2942,17 @@ impl ChatWidget {
     }
 
     pub(crate) fn handle_paste(&mut self, text: String) {
+        let composer_before = self
+            .bottom_pane
+            .no_modal_or_popup_active()
+            .then(|| self.bottom_pane.composer_text_with_pending());
         self.bottom_pane.handle_paste(text);
+        if let Some(before) = composer_before {
+            let composer_after = self.bottom_pane.composer_text_with_pending();
+            if before != composer_after || self.bottom_pane.is_in_paste_burst() {
+                self.prompt_suggestions_intent = false;
+            }
+        }
     }
 
     // Returns true if caller should skip rendering this frame (a future frame is scheduled).

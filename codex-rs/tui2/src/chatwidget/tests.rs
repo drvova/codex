@@ -251,6 +251,45 @@ async fn prompt_suggestion_intent_clears_on_input() {
     assert!(chat.latest_prompt_suggestion.is_some());
 }
 
+#[tokio::test]
+async fn prompt_suggestion_intent_clears_on_multiline_paste() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.features.enable(Feature::PromptSuggestions);
+    chat.config.features.enable(Feature::PromptSuggestionsAutorun);
+    chat.prompt_suggestions_intent = true;
+
+    chat.handle_paste("line one\nline two\nline three\n".to_string());
+    assert!(!chat.prompt_suggestions_intent);
+
+    chat.set_composer_text(String::new());
+    chat.last_completed_turn_id = Some("turn-1".to_string());
+    let event = PromptSuggestionEvent {
+        suggestion: "should not autorun".to_string(),
+        origin: PromptSuggestionOrigin::Llm,
+        context: PromptSuggestionContext::LastAssistant,
+    };
+    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
+    assert!(chat.queued_user_messages.is_empty());
+    assert!(chat.latest_prompt_suggestion.is_some());
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    chat.prompt_suggestions_intent = true;
+    let event = PromptSuggestionEvent {
+        suggestion: "autorun after intent".to_string(),
+        origin: PromptSuggestionOrigin::Llm,
+        context: PromptSuggestionContext::LastAssistant,
+    };
+    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages
+            .front()
+            .expect("queued user message")
+            .text,
+        "autorun after intent"
+    );
+}
+
 /// Entering review mode uses the hint provided by the review request.
 #[tokio::test]
 async fn entered_review_mode_uses_request_hint() {
