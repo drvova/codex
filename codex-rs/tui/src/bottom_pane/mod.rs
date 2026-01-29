@@ -447,6 +447,11 @@ impl BottomPane {
         self.composer.text_elements()
     }
 
+    #[cfg(test)]
+    pub(crate) fn submit_composer_text_for_test(&mut self, text: &str) -> InputResult {
+        self.composer.submit_text_for_test(text)
+    }
+
     pub(crate) fn composer_local_images(&self) -> Vec<LocalImageAttachment> {
         self.composer.local_images()
     }

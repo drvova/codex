@@ -471,6 +471,14 @@ impl ChatComposer {
         self.sync_popups();
     }
 
+    #[cfg(test)]
+    pub(crate) fn submit_text_for_test(&mut self, text: &str) -> InputResult {
+        self.set_text_content(text.to_string());
+        let (result, _) = self.handle_submission(!self.steer_enabled);
+        self.sync_popups();
+        result
+    }
+
     pub(crate) fn clear_for_ctrl_c(&mut self) -> Option<String> {
         if self.is_empty() {
             return None;

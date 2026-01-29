@@ -349,6 +349,11 @@ impl BottomPane {
         self.composer.current_text()
     }
 
+    #[cfg(test)]
+    pub(crate) fn submit_composer_text_for_test(&mut self, text: &str) -> InputResult {
+        self.composer.submit_text_for_test(text)
+    }
+
     /// Update the status indicator header (defaults to "Working") and details below it.
     ///
     /// Passing `None` clears any existing details. No-ops if the status indicator is not active.

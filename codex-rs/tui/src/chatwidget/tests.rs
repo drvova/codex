@@ -977,13 +977,17 @@ async fn prompt_suggestion_intent_clears_on_multiline_paste() {
     chat.config
         .features
         .enable(Feature::PromptSuggestionsAutorun);
-    chat.prompt_suggestions_intent = true;
+    chat.last_completed_turn_id = Some("turn-1".to_string());
+
+    open_prompt_suggestions_via_command(&mut chat);
+    assert!(!chat.bottom_pane.no_modal_or_popup_active());
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
 
     chat.handle_paste("line one\nline two\nline three\n".to_string());
     assert!(!chat.prompt_suggestions_intent);
 
     chat.set_composer_text(String::new(), Vec::new(), Vec::new());
-    chat.last_completed_turn_id = Some("turn-1".to_string());
     let event = PromptSuggestionEvent {
         suggestion: "should not autorun".to_string(),
         origin: PromptSuggestionOrigin::Llm,
@@ -993,8 +997,10 @@ async fn prompt_suggestion_intent_clears_on_multiline_paste() {
     assert!(chat.queued_user_messages.is_empty());
     assert!(chat.latest_prompt_suggestion.is_some());
 
+    open_prompt_suggestions_via_command(&mut chat);
+    assert!(!chat.bottom_pane.no_modal_or_popup_active());
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    chat.prompt_suggestions_intent = true;
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
     let event = PromptSuggestionEvent {
         suggestion: "autorun after intent".to_string(),
         origin: PromptSuggestionOrigin::Llm,
@@ -1009,6 +1015,19 @@ async fn prompt_suggestion_intent_clears_on_multiline_paste() {
             .text,
         "autorun after intent"
     );
+}
+
+fn open_prompt_suggestions_via_command(chat: &mut ChatWidget) {
+    let result = chat
+        .bottom_pane
+        .submit_composer_text_for_test("/suggestions");
+    match result {
+        InputResult::Command(cmd) => {
+            assert!(matches!(cmd, SlashCommand::Suggestions));
+            chat.dispatch_command(cmd);
+        }
+        other => panic!("expected suggestions command, got {other:?}"),
+    }
 }
 
 pub(crate) async fn make_chatwidget_manual_with_sender() -> (

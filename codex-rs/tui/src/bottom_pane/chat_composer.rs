@@ -745,6 +745,14 @@ impl ChatComposer {
         self.sync_popups();
     }
 
+    #[cfg(test)]
+    pub(crate) fn submit_text_for_test(&mut self, text: &str) -> InputResult {
+        self.set_text_content(text.to_string(), Vec::new(), Vec::new());
+        let (result, _) = self.handle_submission(!self.steer_enabled);
+        self.sync_popups();
+        result
+    }
+
     /// Update the placeholder text without changing input enablement.
     pub(crate) fn set_placeholder_text(&mut self, placeholder: String) {
         self.placeholder_text = placeholder;
