@@ -490,6 +490,19 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_prompt_suggestions_status(
+        &mut self,
+        enabled: bool,
+        autorun_enabled: bool,
+    ) {
+        if self
+            .composer
+            .set_prompt_suggestions_status(enabled, autorun_enabled)
+        {
+            self.request_redraw();
+        }
+    }
+
     pub(crate) fn set_transcript_ui_state(
         &mut self,
         scrolled: bool,

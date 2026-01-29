@@ -1658,20 +1658,28 @@ impl ChatWidget {
             None
         };
 
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+            animations_enabled: config.animations,
+            skills: None,
+        });
+        bottom_pane.set_prompt_suggestions_status(
+            config.features.enabled(Feature::PromptSuggestions),
+            config
+                .features
+                .enabled(Feature::PromptSuggestionsAutorun),
+        );
+
         let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-                animations_enabled: config.animations,
-                skills: None,
-            }),
+            bottom_pane,
             active_cell,
             active_cell_revision: 0,
             config,
@@ -1787,20 +1795,28 @@ impl ChatWidget {
             settings: fallback_custom,
         };
 
+        let mut bottom_pane = BottomPane::new(BottomPaneParams {
+            frame_requester: frame_requester.clone(),
+            app_event_tx: app_event_tx.clone(),
+            has_input_focus: true,
+            enhanced_keys_supported,
+            placeholder_text: placeholder,
+            disable_paste_burst: config.disable_paste_burst,
+            animations_enabled: config.animations,
+            skills: None,
+        });
+        bottom_pane.set_prompt_suggestions_status(
+            config.features.enabled(Feature::PromptSuggestions),
+            config
+                .features
+                .enabled(Feature::PromptSuggestionsAutorun),
+        );
+
         let mut widget = Self {
             app_event_tx: app_event_tx.clone(),
             frame_requester: frame_requester.clone(),
             codex_op_tx,
-            bottom_pane: BottomPane::new(BottomPaneParams {
-                frame_requester,
-                app_event_tx,
-                has_input_focus: true,
-                enhanced_keys_supported,
-                placeholder_text: placeholder,
-                disable_paste_burst: config.disable_paste_burst,
-                animations_enabled: config.animations,
-                skills: None,
-            }),
+            bottom_pane,
             active_cell: None,
             active_cell_revision: 0,
             config,
@@ -4016,6 +4032,17 @@ impl ChatWidget {
         }
         if feature == Feature::PromptSuggestions && !enabled {
             self.latest_prompt_suggestion = None;
+        }
+        if matches!(
+            feature,
+            Feature::PromptSuggestions | Feature::PromptSuggestionsAutorun
+        ) {
+            self.bottom_pane.set_prompt_suggestions_status(
+                self.config.features.enabled(Feature::PromptSuggestions),
+                self.config
+                    .features
+                    .enabled(Feature::PromptSuggestionsAutorun),
+            );
         }
         if feature == Feature::PromptSuggestionsAutorun && enabled {
             self.maybe_autorun_prompt_suggestion();

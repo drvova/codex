@@ -200,6 +200,8 @@ pub(crate) struct ChatComposer {
     footer_hint_override: Option<Vec<(String, String)>>,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    prompt_suggestions_enabled: bool,
+    prompt_suggestions_autorun: bool,
     transcript_scrolled: bool,
     transcript_selection_active: bool,
     transcript_scroll_position: Option<(usize, usize)>,
@@ -264,6 +266,8 @@ impl ChatComposer {
             footer_hint_override: None,
             context_window_percent: None,
             context_window_used_tokens: None,
+            prompt_suggestions_enabled: false,
+            prompt_suggestions_autorun: false,
             transcript_scrolled: false,
             transcript_selection_active: false,
             transcript_scroll_position: None,
@@ -1958,6 +1962,8 @@ impl ChatComposer {
             steer_enabled: self.steer_enabled,
             context_window_percent: self.context_window_percent,
             context_window_used_tokens: self.context_window_used_tokens,
+            prompt_suggestions_enabled: self.prompt_suggestions_enabled,
+            prompt_suggestions_autorun: self.prompt_suggestions_autorun,
             transcript_scrolled: self.transcript_scrolled,
             transcript_selection_active: self.transcript_selection_active,
             transcript_scroll_position: self.transcript_scroll_position,
@@ -2310,6 +2316,21 @@ impl ChatComposer {
         }
         self.context_window_percent = percent;
         self.context_window_used_tokens = used_tokens;
+    }
+
+    pub(crate) fn set_prompt_suggestions_status(
+        &mut self,
+        enabled: bool,
+        autorun_enabled: bool,
+    ) -> bool {
+        if self.prompt_suggestions_enabled == enabled
+            && self.prompt_suggestions_autorun == autorun_enabled
+        {
+            return false;
+        }
+        self.prompt_suggestions_enabled = enabled;
+        self.prompt_suggestions_autorun = autorun_enabled;
+        true
     }
 
     pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
