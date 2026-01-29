@@ -199,6 +199,10 @@ impl BottomPane {
         self.composer.set_steer_enabled(enabled);
     }
 
+    pub fn set_collaboration_modes_enabled(&mut self, enabled: bool) {
+        self.composer.set_collaboration_modes_enabled(enabled);
+    }
+
     pub fn status_widget(&self) -> Option<&StatusIndicatorWidget> {
         self.status.as_ref()
     }

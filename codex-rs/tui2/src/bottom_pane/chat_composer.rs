@@ -209,6 +209,7 @@ pub(crate) struct ChatComposer {
     dismissed_skill_popup_token: Option<String>,
     /// When enabled, `Enter` submits immediately and `Tab` requests queuing behavior.
     steer_enabled: bool,
+    collaboration_modes_enabled: bool,
 }
 
 /// Popup state – at most one can be visible at any time.
@@ -271,6 +272,7 @@ impl ChatComposer {
             skills: None,
             dismissed_skill_popup_token: None,
             steer_enabled: false,
+            collaboration_modes_enabled: false,
         };
         // Apply configuration via the setter to keep side-effects centralized.
         this.set_disable_paste_burst(disable_paste_burst);
@@ -298,6 +300,10 @@ impl ChatComposer {
     /// "queue while a task is running" behavior.
     pub fn set_steer_enabled(&mut self, enabled: bool) {
         self.steer_enabled = enabled;
+    }
+
+    pub fn set_collaboration_modes_enabled(&mut self, enabled: bool) {
+        self.collaboration_modes_enabled = enabled;
     }
 
     fn layout_areas(&self, area: Rect) -> [Rect; 3] {
@@ -2156,7 +2162,11 @@ impl ChatComposer {
                 if is_editing_slash_command_name {
                     let skills_enabled = self.skills_enabled();
                     let mut command_popup =
-                        CommandPopup::new(self.custom_prompts.clone(), skills_enabled);
+                        CommandPopup::new(
+                            self.custom_prompts.clone(),
+                            skills_enabled,
+                            self.collaboration_modes_enabled,
+                        );
                     command_popup.on_composer_text_change(first_line.to_string());
                     self.active_popup = ActivePopup::Command(command_popup);
                 }

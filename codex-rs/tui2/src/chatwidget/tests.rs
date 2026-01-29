@@ -17,7 +17,6 @@ use codex_core::CodexAuth;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::Constrained;
-#[cfg(target_os = "windows")]
 use codex_core::features::Feature;
 use codex_core::models_manager::manager::ModelsManager;
 use codex_core::protocol::AgentMessageDeltaEvent;
@@ -57,6 +56,9 @@ use codex_core::protocol::ViewImageToolCallEvent;
 use codex_core::protocol::WarningEvent;
 use codex_protocol::ThreadId;
 use codex_protocol::account::PlanType;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::parse_command::ParsedCommand;
@@ -370,6 +372,23 @@ async fn make_chatwidget_manual(
     if let Some(model) = model_override {
         cfg.model = Some(model.to_string());
     }
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
+    let codex_home = cfg.codex_home.clone();
+    let models_manager = Arc::new(ModelsManager::new(codex_home, auth_manager.clone()));
+    let active_collaboration_mask =
+        ChatWidget::initial_collaboration_mask(&cfg, models_manager.as_ref(), model_override);
+    let header_model = active_collaboration_mask
+        .as_ref()
+        .and_then(|mask| mask.model.clone())
+        .unwrap_or_else(|| resolved_model.clone());
+    let current_collaboration_mode = CollaborationMode {
+        mode: ModeKind::Custom,
+        settings: Settings {
+            model: header_model.clone(),
+            reasoning_effort: None,
+            developer_instructions: None,
+        },
+    };
     let mut bottom = BottomPane::new(BottomPaneParams {
         app_event_tx: app_event_tx.clone(),
         frame_requester: FrameRequester::test_dummy(),
@@ -381,8 +400,7 @@ async fn make_chatwidget_manual(
         skills: None,
     });
     bottom.set_steer_enabled(true);
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
-    let codex_home = cfg.codex_home.clone();
+    bottom.set_collaboration_modes_enabled(cfg.features.enabled(Feature::CollaborationModes));
     let widget = ChatWidget {
         app_event_tx,
         codex_op_tx: op_tx,
@@ -390,14 +408,17 @@ async fn make_chatwidget_manual(
         active_cell: None,
         active_cell_revision: 0,
         config: cfg,
-        model: Some(resolved_model.clone()),
+        model: Some(header_model.clone()),
         auth_manager: auth_manager.clone(),
-        models_manager: Arc::new(ModelsManager::new(codex_home, auth_manager)),
-        session_header: SessionHeader::new(resolved_model),
+        models_manager,
+        session_header: SessionHeader::new(header_model),
         initial_user_message: None,
         token_info: None,
         rate_limit_snapshot: None,
         plan_type: None,
+        current_collaboration_mode,
+        active_collaboration_mask,
+        collaboration_mask_from_cycle: false,
         rate_limit_warnings: RateLimitWarningState::default(),
         rate_limit_switch_prompt: RateLimitSwitchPromptState::default(),
         rate_limit_poller: None,
@@ -407,9 +428,11 @@ async fn make_chatwidget_manual(
         last_unified_wait: None,
         task_complete_pending: false,
         latest_prompt_suggestion: None,
+        prompt_suggestion_history_depth: None,
         agent_turn_running: false,
         mcp_startup_status: None,
         pending_mcp_list_output: false,
+        pending_tools_list_output: false,
         interrupts: InterruptManager::new(),
         reasoning_buffer: String::new(),
         full_reasoning_buffer: String::new(),
@@ -3476,6 +3499,113 @@ printf 'fenced within fenced\n'
     }
 
     assert_snapshot!(term.backend().vt100().screen().contents());
+}
+
+#[tokio::test]
+async fn collab_mode_cycle_auto_switches_to_plan_after_code_turn() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.on_task_complete(Some("Done".to_string()), false);
+
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn collab_mode_cycle_auto_switch_blocks_with_composer_text() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.bottom_pane
+        .set_composer_text("draft".to_string());
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.bottom_pane.set_composer_text(String::new());
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn collab_mode_cycle_auto_switch_blocks_with_popup_active() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.open_review_popup();
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
+}
+
+#[tokio::test]
+async fn collab_mode_cycle_auto_switch_blocks_with_rate_limit_prompt_pending() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+    assert!(matches!(
+        chat.rate_limit_switch_prompt,
+        RateLimitSwitchPromptState::Pending
+    ));
+
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+}
+
+#[tokio::test]
+async fn collab_mode_explicit_selection_does_not_auto_switch() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+    let code_mask = collaboration_modes::code_mask(chat.models_manager.as_ref())
+        .expect("expected code collaboration mode");
+
+    chat.set_collaboration_mask(code_mask);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.on_task_complete(Some("Done".to_string()), false);
+
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+}
+
+#[tokio::test]
+async fn collab_mode_cycle_auto_switch_defers_until_queue_empty() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.conversation_id = Some(ThreadId::new());
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.bottom_pane.set_task_running(true);
+    chat.queue_user_message("Queued message".to_string().into());
+
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
 }
 
 #[tokio::test]

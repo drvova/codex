@@ -2270,6 +2270,27 @@ async fn collab_mode_cycle_auto_switch_blocks_with_popup_active() {
 }
 
 #[tokio::test]
+async fn collab_mode_cycle_auto_switch_blocks_with_rate_limit_prompt_pending() {
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.auth_manager = AuthManager::from_auth_for_testing(auth);
+    chat.set_feature_enabled(Feature::CollaborationModes, true);
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+
+    chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
+    assert!(matches!(
+        chat.rate_limit_switch_prompt,
+        RateLimitSwitchPromptState::Pending
+    ));
+
+    chat.on_task_complete(Some("Done".to_string()), false);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+}
+
+#[tokio::test]
 async fn collab_mode_explicit_selection_does_not_auto_switch() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.set_feature_enabled(Feature::CollaborationModes, true);

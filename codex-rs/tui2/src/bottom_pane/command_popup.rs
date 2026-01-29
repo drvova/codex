@@ -38,11 +38,16 @@ pub(crate) struct CommandPopup {
 }
 
 impl CommandPopup {
-    pub(crate) fn new(mut prompts: Vec<CustomPrompt>, skills_enabled: bool) -> Self {
+    pub(crate) fn new(
+        mut prompts: Vec<CustomPrompt>,
+        skills_enabled: bool,
+        collaboration_modes_enabled: bool,
+    ) -> Self {
         let allow_elevate_sandbox = windows_degraded_sandbox_active();
         let builtins: Vec<(&'static str, SlashCommand)> = built_in_slash_commands()
             .into_iter()
             .filter(|(_, cmd)| skills_enabled || *cmd != SlashCommand::Skills)
+            .filter(|(_, cmd)| collaboration_modes_enabled || *cmd != SlashCommand::Collab)
             .filter(|(_, cmd)| allow_elevate_sandbox || *cmd != SlashCommand::ElevateSandbox)
             .collect();
         // Exclude prompts that collide with builtin command names and sort by name.

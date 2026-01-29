@@ -5596,6 +5596,10 @@ impl ChatWidget {
         let from_cycle = self.collaboration_mask_from_cycle;
         let is_code = self.active_mode_kind() == ModeKind::Code;
         let review_mode = self.is_review_mode;
+        let rate_limit_prompt_pending = matches!(
+            self.rate_limit_switch_prompt,
+            RateLimitSwitchPromptState::Pending
+        );
         let allowed = !from_replay
             && !had_queued_messages
             && enabled
@@ -5605,7 +5609,8 @@ impl ChatWidget {
             && !review_mode
             && !task_running
             && composer_empty
-            && !modal_or_popup_active;
+            && !modal_or_popup_active
+            && !rate_limit_prompt_pending;
 
         debug!(
             from_replay,
@@ -5618,6 +5623,7 @@ impl ChatWidget {
             task_running,
             composer_empty,
             modal_or_popup_active,
+            rate_limit_prompt_pending,
             allowed,
             "auto-switch cycle check"
         );
