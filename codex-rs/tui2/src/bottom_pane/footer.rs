@@ -167,7 +167,7 @@ fn context_window_line(props: FooterProps) -> Line<'static> {
 
     let mut spans = vec![Span::from(base).dim()];
     if props.prompt_suggestions_enabled {
-        spans.push(Span::from(" | PS auto: ").dim());
+        spans.push(Span::from(" | Suggestions auto: ").dim());
         let status = if props.prompt_suggestions_autorun {
             "On".green()
         } else {

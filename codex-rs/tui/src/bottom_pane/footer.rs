@@ -759,7 +759,7 @@ pub(crate) fn context_window_line(
 
     let mut spans = vec![Span::from(base).dim()];
     if prompt_suggestions_enabled {
-        spans.push(Span::from(" | PS auto: ").dim());
+        spans.push(Span::from(" | Suggestions auto: ").dim());
         let status = if prompt_suggestions_autorun {
             "On".green()
         } else {
