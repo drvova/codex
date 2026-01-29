@@ -27,6 +27,11 @@ pub struct McpSearchHandler;
 
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 50;
+const MIN_QUERY_TERM_LEN: usize = 2;
+const QUERY_STOPWORDS: &[&str] = &[
+    "a", "an", "are", "at", "be", "by", "for", "from", "i", "in", "is", "me", "my", "of", "on",
+    "our", "please", "the", "to", "with", "you", "your",
+];
 
 fn default_limit() -> usize {
     DEFAULT_LIMIT
@@ -122,6 +127,8 @@ struct McpSearchRouteCandidate {
     #[serde(skip_serializing_if = "Option::is_none")]
     schema: Option<McpToolSchema>,
     score: McpSearchRouteScore,
+    #[serde(skip_serializing)]
+    text_score: TextMatchScore,
     #[serde(skip_serializing_if = "Option::is_none")]
     arguments: Option<JsonValue>,
     missing_required: Vec<String>,
@@ -270,6 +277,77 @@ fn extract_urls(query: &str) -> Vec<String> {
         }
     }
     urls
+}
+
+#[derive(Clone, Copy)]
+struct TextMatchScore {
+    score: usize,
+    term_matches: usize,
+}
+
+struct QueryTokens {
+    query_lc: String,
+    terms: Vec<String>,
+}
+
+impl QueryTokens {
+    fn new(query: &str) -> Self {
+        let query_lc = query.to_lowercase();
+        let terms = tokenize_query(&query_lc);
+        Self { query_lc, terms }
+    }
+}
+
+fn tokenize_query(query_lc: &str) -> Vec<String> {
+    let mut terms = query_lc
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .filter(|token| token.len() >= MIN_QUERY_TERM_LEN)
+        .filter(|token| !QUERY_STOPWORDS.contains(token))
+        .map(str::to_string)
+        .collect::<Vec<String>>();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn text_match_score(
+    tokens: &QueryTokens,
+    tool_name_lc: &str,
+    qualified_name_lc: &str,
+    description_lc: &str,
+) -> TextMatchScore {
+    let mut score = 0;
+    let mut term_matches = 0;
+
+    if !tokens.query_lc.is_empty() {
+        if tool_name_lc.contains(&tokens.query_lc) || qualified_name_lc.contains(&tokens.query_lc) {
+            score += 4;
+        }
+        if description_lc.contains(&tokens.query_lc) {
+            score += 2;
+        }
+    }
+
+    for term in &tokens.terms {
+        let mut matched = false;
+        if tool_name_lc.contains(term) || qualified_name_lc.contains(term) {
+            score += 2;
+            matched = true;
+        }
+        if description_lc.contains(term) {
+            score += 1;
+            matched = true;
+        }
+        if matched {
+            term_matches += 1;
+        }
+    }
+
+    TextMatchScore {
+        score,
+        term_matches,
+    }
 }
 
 fn normalize_url_candidate(raw: &str) -> Option<String> {
@@ -501,6 +579,7 @@ async fn route_query(
     tools: std::collections::HashMap<String, crate::mcp_connection_manager::ToolInfo>,
 ) -> Result<RouteOutput, FunctionCallError> {
     let urls = extract_urls(query);
+    let query_tokens = QueryTokens::new(query);
     let mut candidates = Vec::new();
 
     for (qualified_name, tool_info) in tools {
@@ -511,9 +590,18 @@ async fn route_query(
         }
 
         let description = tool_info.tool.description.clone();
+        let description_lc = description.as_deref().unwrap_or("").to_lowercase();
+        let tool_name_lc = tool_info.tool_name.to_lowercase();
+        let qualified_name_lc = qualified_name.to_lowercase();
+        let text_score = text_match_score(
+            &query_tokens,
+            &tool_name_lc,
+            &qualified_name_lc,
+            &description_lc,
+        );
         let inference = infer_arguments(query, &urls, &tool_info.tool.input_schema);
 
-        if inference.required_filled == 0 && inference.typed_matches == 0 {
+        if inference.required_filled == 0 && inference.typed_matches == 0 && text_score.score == 0 {
             continue;
         }
 
@@ -541,6 +629,7 @@ async fn route_query(
                 required_total: inference.required_total,
                 typed_matches: inference.typed_matches,
             },
+            text_score,
             arguments: inference.arguments,
             missing_required: inference.missing_required,
         });
@@ -549,6 +638,8 @@ async fn route_query(
     candidates.sort_by(|a, b| {
         b.score
             .cmp(&a.score)
+            .then_with(|| b.text_score.score.cmp(&a.text_score.score))
+            .then_with(|| b.text_score.term_matches.cmp(&a.text_score.term_matches))
             .then_with(|| a.qualified_name.cmp(&b.qualified_name))
     });
 
@@ -914,7 +1005,7 @@ impl ToolHandler for McpSearchHandler {
         let query = resolve_query(session.as_ref(), args.query.as_deref()).await?;
 
         let limit = args.limit.min(MAX_LIMIT);
-        let query_lc = query.to_lowercase();
+        let query_tokens = QueryTokens::new(&query);
         let server_filter = args
             .server
             .as_deref()
@@ -933,13 +1024,13 @@ impl ToolHandler for McpSearchHandler {
             let qualified_name_lc = qualified_name.to_lowercase();
             let description = tool_info.tool.description.as_deref().unwrap_or("");
             let description_lc = description.to_lowercase();
-            let mut score = 0;
-            if tool_name_lc.contains(&query_lc) || qualified_name_lc.contains(&query_lc) {
-                score += 2;
-            }
-            if description_lc.contains(&query_lc) {
-                score += 1;
-            }
+            let text_score = text_match_score(
+                &query_tokens,
+                &tool_name_lc,
+                &qualified_name_lc,
+                &description_lc,
+            );
+            let score = text_score.score;
 
             if score == 0 {
                 continue;
