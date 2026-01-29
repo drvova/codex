@@ -204,6 +204,7 @@ use std::path::Path;
 use chrono::Local;
 use codex_common::approval_presets::ApprovalPreset;
 use codex_common::approval_presets::builtin_approval_presets;
+use codex_common::prompt_suggestions::PromptSuggestionGate;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ThreadManager;
@@ -1045,27 +1046,14 @@ impl ChatWidget {
         if self.maybe_autorun_prompt_suggestion() {
             return;
         }
-        if self.is_review_mode
-            || self.bottom_pane.is_task_running()
-            || !self.bottom_pane.composer_is_empty()
-            || !self.bottom_pane.no_modal_or_popup_active()
-        {
+        if !self.prompt_suggestion_gate().can_open_view() {
             return;
         }
         self.open_prompt_suggestions_view(Some(event));
     }
 
     fn can_autorun_prompt_suggestion(&self) -> bool {
-        self.config
-            .features
-            .enabled(Feature::PromptSuggestionsAutorun)
-            && self.config.features.enabled(Feature::PromptSuggestions)
-            && self.prompt_suggestions_intent
-            && !self.is_review_mode
-            && !self.bottom_pane.is_task_running()
-            && self.bottom_pane.composer_is_empty()
-            && self.bottom_pane.no_modal_or_popup_active()
-            && self.queued_user_messages.is_empty()
+        self.prompt_suggestion_gate().can_autorun()
     }
 
     fn maybe_autorun_prompt_suggestion(&mut self) -> bool {
@@ -1078,6 +1066,26 @@ impl ChatWidget {
         debug!("auto-running prompt suggestion");
         self.submit_prompt_suggestion(suggestion.suggestion.clone());
         true
+    }
+
+    fn prompt_suggestion_gate(&self) -> PromptSuggestionGate {
+        PromptSuggestionGate {
+            suggestions_enabled: self.config.features.enabled(Feature::PromptSuggestions),
+            autorun_enabled: self
+                .config
+                .features
+                .enabled(Feature::PromptSuggestionsAutorun),
+            intent: self.prompt_suggestions_intent,
+            is_review_mode: self.is_review_mode,
+            task_running: self.bottom_pane.is_task_running(),
+            composer_empty: self.bottom_pane.composer_is_empty(),
+            no_modal_or_popup_active: self.bottom_pane.no_modal_or_popup_active(),
+            queued_user_messages_empty: self.queued_user_messages.is_empty(),
+        }
+    }
+
+    fn clear_prompt_suggestions_intent(&mut self) {
+        self.prompt_suggestions_intent = false;
     }
 
     pub(crate) fn set_prompt_suggestion_history_depth(&mut self, history_depth: Option<u32>) {
@@ -2576,7 +2584,7 @@ impl ChatWidget {
                 if let Some(before) = composer_before {
                     let composer_after = self.bottom_pane.composer_text_with_pending();
                     if before != composer_after || self.bottom_pane.is_in_paste_burst() {
-                        self.prompt_suggestions_intent = false;
+                        self.clear_prompt_suggestions_intent();
                     }
                 }
                 match input_result {
@@ -2586,7 +2594,7 @@ impl ChatWidget {
                         max_output_tokens,
                         history_depth,
                     } => {
-                        self.prompt_suggestions_intent = false;
+                        self.clear_prompt_suggestions_intent();
                         let user_message = UserMessage {
                             text,
                             local_images: self
@@ -2613,7 +2621,7 @@ impl ChatWidget {
                         max_output_tokens,
                         history_depth,
                     } => {
-                        self.prompt_suggestions_intent = false;
+                        self.clear_prompt_suggestions_intent();
                         let user_message = UserMessage {
                             text,
                             local_images: self
@@ -2627,12 +2635,12 @@ impl ChatWidget {
                     }
                     InputResult::Command(cmd) => {
                         if !matches!(cmd, SlashCommand::Suggestions) {
-                            self.prompt_suggestions_intent = false;
+                            self.clear_prompt_suggestions_intent();
                         }
                         self.dispatch_command(cmd);
                     }
                     InputResult::CommandWithArgs(cmd, args) => {
-                        self.prompt_suggestions_intent = false;
+                        self.clear_prompt_suggestions_intent();
                         self.dispatch_command_with_args(cmd, args);
                     }
                     InputResult::None => {}
@@ -2950,7 +2958,7 @@ impl ChatWidget {
         if let Some(before) = composer_before {
             let composer_after = self.bottom_pane.composer_text_with_pending();
             if before != composer_after || self.bottom_pane.is_in_paste_burst() {
-                self.prompt_suggestions_intent = false;
+                self.clear_prompt_suggestions_intent();
             }
         }
     }
@@ -5908,7 +5916,7 @@ impl ChatWidget {
         if trimmed.is_empty() {
             return;
         }
-        self.prompt_suggestions_intent = false;
+        self.clear_prompt_suggestions_intent();
         self.latest_prompt_suggestion = None;
         self.queue_user_message(UserMessage {
             text: trimmed.to_string(),
@@ -5924,7 +5932,7 @@ impl ChatWidget {
         if trimmed.is_empty() {
             return;
         }
-        self.prompt_suggestions_intent = false;
+        self.clear_prompt_suggestions_intent();
         self.latest_prompt_suggestion = None;
         self.set_composer_text(trimmed.to_string(), Vec::new(), Vec::new());
     }
