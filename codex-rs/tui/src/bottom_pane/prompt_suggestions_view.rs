@@ -155,16 +155,21 @@ impl PromptSuggestionsView {
             PromptSuggestionOrigin::Llm => "LLM",
             PromptSuggestionOrigin::Unknown => "Unknown",
         };
-        let context = match &self.context {
-            PromptSuggestionContext::LastAssistant => "Last assistant response".to_string(),
-            PromptSuggestionContext::History { depth } => {
-                format!("History (last {depth} user turns)")
+        let (context, next_context) = match self.history_depth_override {
+            Some(depth) => {
+                let value = format!("History (last {depth} user turns)");
+                (value.clone(), value)
             }
-            PromptSuggestionContext::Unknown => "Unknown".to_string(),
-        };
-        let next_context = match self.history_depth_override {
-            Some(depth) => format!("History (last {depth} user turns)"),
-            None => "Last assistant response".to_string(),
+            None => {
+                let context = match &self.context {
+                    PromptSuggestionContext::LastAssistant => "Last assistant response".to_string(),
+                    PromptSuggestionContext::History { depth } => {
+                        format!("History (last {depth} user turns)")
+                    }
+                    PromptSuggestionContext::Unknown => "Unknown".to_string(),
+                };
+                (context, "Last assistant response".to_string())
+            }
         };
         vec![
             Line::from(vec!["Origin: ".dim(), origin.into()]),
