@@ -37,6 +37,7 @@ pub enum SlashCommand {
     Suggestions,
     Mcp,
     Tools,
+    Apps,
     Logout,
     Quit,
     Exit,
@@ -66,7 +67,7 @@ impl SlashCommand {
             SlashCommand::Suggestions => "open prompt suggestions",
             SlashCommand::Ps => "view background terminals",
             SlashCommand::Model => "choose what model and reasoning effort to use",
-            SlashCommand::Personality => "choose a communication style for responses",
+            SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::SubagentModel => {
                 "choose the model and reasoning effort used by spawned subagents"
             }
@@ -79,6 +80,7 @@ impl SlashCommand {
             SlashCommand::McpSearch => "toggle MCPSearch tool aggregation",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Tools => "list available tools",
+            SlashCommand::Apps => "manage apps",
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
@@ -118,6 +120,7 @@ impl SlashCommand {
             | SlashCommand::Ps
             | SlashCommand::Mcp
             | SlashCommand::Tools
+            | SlashCommand::Apps
             | SlashCommand::Feedback
             | SlashCommand::Quit
             | SlashCommand::Exit => true,
