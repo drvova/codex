@@ -9,20 +9,16 @@ import {
   type ToolDefinition,
   type ToolRegistry,
 } from "./registry";
-
-export type UserMcpPolicy = {
-  riskPolicy?: RiskPolicy;
-  readOnlyTools?: Array<string | RegExp>;
-  writeTools?: Array<string | RegExp>;
-  riskOverrides?: Record<string, RiskLevel>;
-};
-
-export type UserMetadata = {
-  id: string;
-  mcp?: UserMcpPolicy;
-};
+import { onMcpConfigChange } from "./configWatcher";
+import {
+  fetchUserMetadata,
+  type UserMcpPolicy,
+  type UserMetadata,
+} from "../user/metadata";
 
 export type UserMetadataProvider = (userId: string) => Promise<UserMetadata | null>;
+
+export type { UserMcpPolicy, UserMetadata };
 
 export type McpConfigWatcher = {
   onChange: (listener: () => void) => () => void;
@@ -152,20 +148,18 @@ export const createToolRouter = (mcpSearch: McpSearch, options: ToolRouterOption
     ttlMs: options.ttlMs ?? 60_000,
   };
   const basePolicy = options.baseRiskPolicy ?? {};
-  const userMetadataProvider = options.userMetadataProvider;
+  const userMetadataProvider = options.userMetadataProvider ?? fetchUserMetadata;
+  const configWatcher: McpConfigWatcher = options.configWatcher ?? {
+    onChange: (listener) => onMcpConfigChange(() => listener()),
+  };
   const userRegistries = new Map<string, UserRegistryState>();
   let unsubscribe: (() => void) | null = null;
 
-  if (options.configWatcher) {
-    unsubscribe = options.configWatcher.onChange(() => {
-      userRegistries.forEach(({ manager }) => manager.invalidate());
-    });
-  }
+  unsubscribe = configWatcher.onChange(() => {
+    userRegistries.forEach(({ manager }) => manager.invalidate());
+  });
 
   const getPolicyForUser = async (userId: string): Promise<RiskPolicy> => {
-    if (!userMetadataProvider) {
-      return basePolicy;
-    }
     const metadata = await userMetadataProvider(userId);
     return mergeRiskPolicy(basePolicy, metadata?.mcp);
   };
