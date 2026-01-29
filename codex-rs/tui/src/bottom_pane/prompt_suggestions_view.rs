@@ -19,7 +19,7 @@ use crate::render::Insets;
 use crate::render::RectExt as _;
 use crate::render::renderable::Renderable;
 use crate::style::user_message_style;
-use codex_core::features::Feature;
+use codex_common::prompt_suggestions::PromptSuggestionsSettings;
 use codex_core::protocol::PromptSuggestionContext;
 use codex_core::protocol::PromptSuggestionEvent;
 use codex_core::protocol::PromptSuggestionOrigin;
@@ -99,24 +99,25 @@ impl PromptSuggestionsView {
     }
 
     fn toggle_enabled(&mut self) {
-        self.enabled = !self.enabled;
-        let mut updates = vec![(Feature::PromptSuggestions, self.enabled)];
-        if !self.enabled && self.auto_run_enabled {
-            self.auto_run_enabled = false;
-            updates.push((Feature::PromptSuggestionsAutorun, false));
+        let (next, updates) = PromptSuggestionsSettings {
+            enabled: self.enabled,
+            autorun_enabled: self.auto_run_enabled,
         }
+        .toggle_enabled();
+        self.enabled = next.enabled;
+        self.auto_run_enabled = next.autorun_enabled;
         self.app_event_tx
             .send(AppEvent::UpdateFeatureFlags { updates });
     }
 
     fn toggle_auto_run(&mut self) {
-        let mut updates = Vec::new();
-        if !self.enabled {
-            self.enabled = true;
-            updates.push((Feature::PromptSuggestions, true));
+        let (next, updates) = PromptSuggestionsSettings {
+            enabled: self.enabled,
+            autorun_enabled: self.auto_run_enabled,
         }
-        self.auto_run_enabled = !self.auto_run_enabled;
-        updates.push((Feature::PromptSuggestionsAutorun, self.auto_run_enabled));
+        .toggle_autorun();
+        self.enabled = next.enabled;
+        self.auto_run_enabled = next.autorun_enabled;
         self.app_event_tx
             .send(AppEvent::UpdateFeatureFlags { updates });
     }
