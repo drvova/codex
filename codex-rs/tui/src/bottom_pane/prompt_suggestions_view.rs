@@ -173,7 +173,7 @@ impl PromptSuggestionsView {
         };
         vec![
             Line::from(vec!["Origin: ".dim(), origin.into()]),
-            Line::from(vec!["Context: ".dim(), context.into()]),
+            Line::from(vec!["Current context: ".dim(), context.into()]),
             Line::from(vec!["Next context: ".dim(), next_context.into()]),
         ]
     }
