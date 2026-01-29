@@ -458,6 +458,8 @@ pub(crate) struct ChatWidget {
     last_completed_turn_id: Option<String>,
     latest_prompt_suggestion: Option<PromptSuggestionEvent>,
     prompt_suggestion_history_depth: Option<u32>,
+    /// True when the user explicitly opened the prompt suggestions view.
+    prompt_suggestions_intent: bool,
     background_terminals_state: Arc<Mutex<BackgroundTerminalsState>>,
     /// Tracks whether codex-core currently considers an agent turn to be in progress.
     ///
@@ -1058,6 +1060,7 @@ impl ChatWidget {
             .features
             .enabled(Feature::PromptSuggestionsAutorun)
             && self.config.features.enabled(Feature::PromptSuggestions)
+            && self.prompt_suggestions_intent
             && !self.is_review_mode
             && !self.bottom_pane.is_task_running()
             && self.bottom_pane.composer_is_empty()
@@ -2147,6 +2150,7 @@ impl ChatWidget {
             last_completed_turn_id: None,
             latest_prompt_suggestion: None,
             prompt_suggestion_history_depth: None,
+            prompt_suggestions_intent: false,
             background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
             agent_turn_running: false,
             mcp_startup_status: None,
@@ -2286,6 +2290,7 @@ impl ChatWidget {
             last_completed_turn_id: None,
             latest_prompt_suggestion: None,
             prompt_suggestion_history_depth: None,
+            prompt_suggestions_intent: false,
             background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
             agent_turn_running: false,
             mcp_startup_status: None,
@@ -2418,6 +2423,7 @@ impl ChatWidget {
             last_completed_turn_id: None,
             latest_prompt_suggestion: None,
             prompt_suggestion_history_depth: None,
+            prompt_suggestions_intent: false,
             background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
             agent_turn_running: false,
             mcp_startup_status: None,
@@ -2561,58 +2567,77 @@ impl ChatWidget {
                     self.request_redraw();
                 }
             }
-            _ => match self.bottom_pane.handle_key_event(key_event) {
-                InputResult::Submitted {
-                    text,
-                    text_elements,
-                    max_output_tokens,
-                    history_depth,
-                } => {
-                    let user_message = UserMessage {
-                        text,
-                        local_images: self
-                            .bottom_pane
-                            .take_recent_submission_images_with_placeholders(),
-                        text_elements,
-                        max_output_tokens,
-                        history_depth,
-                    };
-                    if self.is_session_configured() {
-                        // Submitted is only emitted when steer is enabled (Enter sends immediately).
-                        // Reset any reasoning header only when we are actually submitting a turn.
-                        self.reasoning_buffer.clear();
-                        self.full_reasoning_buffer.clear();
-                        self.set_status_header(String::from("Working"));
-                        self.submit_user_message(user_message);
-                    } else {
-                        self.queue_user_message(user_message);
+            _ => {
+                let composer_before = self
+                    .bottom_pane
+                    .no_modal_or_popup_active()
+                    .then(|| self.bottom_pane.composer_text_with_pending());
+                let input_result = self.bottom_pane.handle_key_event(key_event);
+                if let Some(before) = composer_before {
+                    let composer_after = self.bottom_pane.composer_text_with_pending();
+                    if before != composer_after || self.bottom_pane.is_in_paste_burst() {
+                        self.prompt_suggestions_intent = false;
                     }
                 }
-                InputResult::Queued {
-                    text,
-                    text_elements,
-                    max_output_tokens,
-                    history_depth,
-                } => {
-                    let user_message = UserMessage {
+                match input_result {
+                    InputResult::Submitted {
                         text,
-                        local_images: self
-                            .bottom_pane
-                            .take_recent_submission_images_with_placeholders(),
                         text_elements,
                         max_output_tokens,
                         history_depth,
-                    };
-                    self.queue_user_message(user_message);
+                    } => {
+                        self.prompt_suggestions_intent = false;
+                        let user_message = UserMessage {
+                            text,
+                            local_images: self
+                                .bottom_pane
+                                .take_recent_submission_images_with_placeholders(),
+                            text_elements,
+                            max_output_tokens,
+                            history_depth,
+                        };
+                        if self.is_session_configured() {
+                            // Submitted is only emitted when steer is enabled (Enter sends immediately).
+                            // Reset any reasoning header only when we are actually submitting a turn.
+                            self.reasoning_buffer.clear();
+                            self.full_reasoning_buffer.clear();
+                            self.set_status_header(String::from("Working"));
+                            self.submit_user_message(user_message);
+                        } else {
+                            self.queue_user_message(user_message);
+                        }
+                    }
+                    InputResult::Queued {
+                        text,
+                        text_elements,
+                        max_output_tokens,
+                        history_depth,
+                    } => {
+                        self.prompt_suggestions_intent = false;
+                        let user_message = UserMessage {
+                            text,
+                            local_images: self
+                                .bottom_pane
+                                .take_recent_submission_images_with_placeholders(),
+                            text_elements,
+                            max_output_tokens,
+                            history_depth,
+                        };
+                        self.queue_user_message(user_message);
+                    }
+                    InputResult::Command(cmd) => {
+                        if !matches!(cmd, SlashCommand::Suggestions) {
+                            self.prompt_suggestions_intent = false;
+                        }
+                        self.dispatch_command(cmd);
+                    }
+                    InputResult::CommandWithArgs(cmd, args) => {
+                        self.prompt_suggestions_intent = false;
+                        self.dispatch_command_with_args(cmd, args);
+                    }
+                    InputResult::None => {}
                 }
-                InputResult::Command(cmd) => {
-                    self.dispatch_command(cmd);
-                }
-                InputResult::CommandWithArgs(cmd, args) => {
-                    self.dispatch_command_with_args(cmd, args);
-                }
-                InputResult::None => {}
-            },
+            }
         }
     }
 
@@ -2820,6 +2845,7 @@ impl ChatWidget {
                 self.add_status_output();
             }
             SlashCommand::Suggestions => {
+                self.prompt_suggestions_intent = true;
                 self.open_prompt_suggestions_view(self.latest_prompt_suggestion.clone());
             }
             SlashCommand::Ps => {
@@ -5872,6 +5898,7 @@ impl ChatWidget {
         if trimmed.is_empty() {
             return;
         }
+        self.prompt_suggestions_intent = false;
         self.latest_prompt_suggestion = None;
         self.queue_user_message(UserMessage {
             text: trimmed.to_string(),
@@ -5887,6 +5914,7 @@ impl ChatWidget {
         if trimmed.is_empty() {
             return;
         }
+        self.prompt_suggestions_intent = false;
         self.latest_prompt_suggestion = None;
         self.set_composer_text(trimmed.to_string(), Vec::new(), Vec::new());
     }

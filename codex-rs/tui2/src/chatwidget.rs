@@ -397,6 +397,8 @@ pub(crate) struct ChatWidget {
     last_completed_turn_id: Option<String>,
     latest_prompt_suggestion: Option<PromptSuggestionEvent>,
     prompt_suggestion_history_depth: Option<u32>,
+    /// True when the user explicitly opened the prompt suggestions view.
+    prompt_suggestions_intent: bool,
     background_terminals_state: Arc<Mutex<BackgroundTerminalsState>>,
     /// Tracks whether codex-core currently considers an agent turn to be in progress.
     ///
@@ -772,6 +774,7 @@ impl ChatWidget {
             .features
             .enabled(Feature::PromptSuggestionsAutorun)
             && self.config.features.enabled(Feature::PromptSuggestions)
+            && self.prompt_suggestions_intent
             && !self.is_review_mode
             && !self.bottom_pane.is_task_running()
             && self.bottom_pane.composer_is_empty()
@@ -1689,6 +1692,7 @@ impl ChatWidget {
             last_completed_turn_id: None,
             latest_prompt_suggestion: None,
             prompt_suggestion_history_depth: None,
+            prompt_suggestions_intent: false,
             background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
             agent_turn_running: false,
             mcp_startup_status: None,
@@ -1817,6 +1821,7 @@ impl ChatWidget {
             last_completed_turn_id: None,
             latest_prompt_suggestion: None,
             prompt_suggestion_history_depth: None,
+            prompt_suggestions_intent: false,
             background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
             agent_turn_running: false,
             mcp_startup_status: None,
@@ -1939,10 +1944,22 @@ impl ChatWidget {
                 }
             }
             _ => {
-                match self.bottom_pane.handle_key_event(key_event) {
+                let composer_before = self
+                    .bottom_pane
+                    .no_modal_or_popup_active()
+                    .then(|| self.bottom_pane.composer_text_with_pending());
+                let input_result = self.bottom_pane.handle_key_event(key_event);
+                if let Some(before) = composer_before {
+                    let composer_after = self.bottom_pane.composer_text_with_pending();
+                    if before != composer_after || self.bottom_pane.is_in_paste_burst() {
+                        self.prompt_suggestions_intent = false;
+                    }
+                }
+                match input_result {
                     InputResult::Submitted(text) => {
                         // Enter always sends messages immediately (bypasses queue check)
                         // Clear any reasoning status header when submitting a new message
+                        self.prompt_suggestions_intent = false;
                         self.reasoning_buffer.clear();
                         self.full_reasoning_buffer.clear();
                         self.set_status_header(String::from("Working"));
@@ -1958,6 +1975,7 @@ impl ChatWidget {
                     }
                     InputResult::Queued(text) => {
                         // Tab queues the message if a task is running, otherwise submits immediately
+                        self.prompt_suggestions_intent = false;
                         let user_message = UserMessage {
                             text,
                             image_paths: self.bottom_pane.take_recent_submission_images(),
@@ -1965,9 +1983,13 @@ impl ChatWidget {
                         self.queue_user_message(user_message);
                     }
                     InputResult::Command(cmd) => {
+                        if !matches!(cmd, SlashCommand::Suggestions) {
+                            self.prompt_suggestions_intent = false;
+                        }
                         self.dispatch_command(cmd);
                     }
                     InputResult::CommandWithArgs(cmd, args) => {
+                        self.prompt_suggestions_intent = false;
                         self.dispatch_command_with_args(cmd, args);
                     }
                     InputResult::None => {}
@@ -2126,6 +2148,7 @@ impl ChatWidget {
                 self.add_status_output();
             }
             SlashCommand::Suggestions => {
+                self.prompt_suggestions_intent = true;
                 self.open_prompt_suggestions_view(self.latest_prompt_suggestion.clone());
             }
             SlashCommand::Ps => {
@@ -4440,6 +4463,7 @@ impl ChatWidget {
         if trimmed.is_empty() {
             return;
         }
+        self.prompt_suggestions_intent = false;
         self.latest_prompt_suggestion = None;
         self.queue_user_message(UserMessage {
             text: trimmed.to_string(),
@@ -4452,6 +4476,7 @@ impl ChatWidget {
         if trimmed.is_empty() {
             return;
         }
+        self.prompt_suggestions_intent = false;
         self.latest_prompt_suggestion = None;
         self.set_composer_text(trimmed.to_string());
     }

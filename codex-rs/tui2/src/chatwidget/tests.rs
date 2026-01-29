@@ -41,6 +41,9 @@ use codex_core::protocol::McpStartupUpdateEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::PatchApplyEndEvent;
+use codex_core::protocol::PromptSuggestionContext;
+use codex_core::protocol::PromptSuggestionEvent;
+use codex_core::protocol::PromptSuggestionOrigin;
 use codex_core::protocol::RateLimitWindow;
 use codex_core::protocol::ReviewRequest;
 use codex_core::protocol::ReviewTarget;
@@ -169,6 +172,83 @@ async fn resumed_initial_messages_render_history() {
         text_blob.contains("assistant reply"),
         "expected replayed agent message",
     );
+}
+
+#[tokio::test]
+async fn prompt_suggestion_autorun_requires_intent() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.features.enable(Feature::PromptSuggestions);
+    chat.config.features.enable(Feature::PromptSuggestionsAutorun);
+    chat.last_completed_turn_id = Some("turn-1".to_string());
+
+    let event = PromptSuggestionEvent {
+        suggestion: "try this".to_string(),
+        origin: PromptSuggestionOrigin::Llm,
+        context: PromptSuggestionContext::LastAssistant,
+    };
+    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
+
+    assert!(chat.queued_user_messages.is_empty());
+    let latest = chat
+        .latest_prompt_suggestion
+        .as_ref()
+        .expect("expected latest suggestion");
+    assert_eq!(latest.suggestion, "try this");
+    assert_eq!(latest.origin, PromptSuggestionOrigin::Llm);
+    assert_eq!(latest.context, PromptSuggestionContext::LastAssistant);
+}
+
+#[tokio::test]
+async fn prompt_suggestion_autorun_with_intent() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.features.enable(Feature::PromptSuggestions);
+    chat.config.features.enable(Feature::PromptSuggestionsAutorun);
+    chat.prompt_suggestions_intent = true;
+    chat.last_completed_turn_id = Some("turn-1".to_string());
+
+    let event = PromptSuggestionEvent {
+        suggestion: "auto run me".to_string(),
+        origin: PromptSuggestionOrigin::Llm,
+        context: PromptSuggestionContext::LastAssistant,
+    };
+    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
+
+    assert!(chat.latest_prompt_suggestion.is_none());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages
+            .front()
+            .expect("queued user message")
+            .text,
+        "auto run me"
+    );
+    assert!(!chat.prompt_suggestions_intent);
+}
+
+#[tokio::test]
+async fn prompt_suggestion_intent_clears_on_input() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.features.enable(Feature::PromptSuggestions);
+    chat.config.features.enable(Feature::PromptSuggestionsAutorun);
+    chat.prompt_suggestions_intent = true;
+
+    chat.handle_key_event(KeyEvent::new(
+        KeyCode::Char('a'),
+        KeyModifiers::NONE,
+    ));
+    assert!(!chat.prompt_suggestions_intent);
+
+    chat.set_composer_text(String::new());
+    chat.last_completed_turn_id = Some("turn-1".to_string());
+    let event = PromptSuggestionEvent {
+        suggestion: "should not autorun".to_string(),
+        origin: PromptSuggestionOrigin::Llm,
+        context: PromptSuggestionContext::LastAssistant,
+    };
+    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
+
+    assert!(chat.queued_user_messages.is_empty());
+    assert!(chat.latest_prompt_suggestion.is_some());
 }
 
 /// Entering review mode uses the hint provided by the review request.
@@ -429,6 +509,7 @@ async fn make_chatwidget_manual(
         task_complete_pending: false,
         latest_prompt_suggestion: None,
         prompt_suggestion_history_depth: None,
+        prompt_suggestions_intent: false,
         agent_turn_running: false,
         mcp_startup_status: None,
         pending_mcp_list_output: false,
