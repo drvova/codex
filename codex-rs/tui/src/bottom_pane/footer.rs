@@ -67,6 +67,8 @@ pub(crate) struct FooterProps {
     pub(crate) quit_shortcut_key: KeyBinding,
     pub(crate) context_window_percent: Option<i64>,
     pub(crate) context_window_used_tokens: Option<i64>,
+    pub(crate) prompt_suggestions_enabled: bool,
+    pub(crate) prompt_suggestions_autorun: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -739,18 +741,33 @@ fn build_columns(entries: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-pub(crate) fn context_window_line(percent: Option<i64>, used_tokens: Option<i64>) -> Line<'static> {
-    if let Some(percent) = percent {
+pub(crate) fn context_window_line(
+    percent: Option<i64>,
+    used_tokens: Option<i64>,
+    prompt_suggestions_enabled: bool,
+    prompt_suggestions_autorun: bool,
+) -> Line<'static> {
+    let base = if let Some(percent) = percent {
         let percent = percent.clamp(0, 100);
-        return Line::from(vec![Span::from(format!("{percent}% context left")).dim()]);
-    }
-
-    if let Some(tokens) = used_tokens {
+        format!("{percent}% context left")
+    } else if let Some(tokens) = used_tokens {
         let used_fmt = format_tokens_compact(tokens);
-        return Line::from(vec![Span::from(format!("{used_fmt} used")).dim()]);
-    }
+        format!("{used_fmt} used")
+    } else {
+        "100% context left".to_string()
+    };
 
-    Line::from(vec![Span::from("100% context left").dim()])
+    let mut spans = vec![Span::from(base).dim()];
+    if prompt_suggestions_enabled {
+        spans.push(Span::from(" | PS auto: ").dim());
+        let status = if prompt_suggestions_autorun {
+            "On".green()
+        } else {
+            "Off".red()
+        };
+        spans.push(status);
+    }
+    Line::from(spans)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -976,6 +993,8 @@ mod tests {
                 let context_line = context_window_line(
                     props.context_window_percent,
                     props.context_window_used_tokens,
+                    props.prompt_suggestions_enabled,
+                    props.prompt_suggestions_autorun,
                 );
                 let context_width = context_line.width() as u16;
                 let show_cycle_hint = !props.is_task_running;
@@ -1074,6 +1093,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1089,6 +1110,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1104,6 +1127,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1119,6 +1144,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1134,6 +1161,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1149,6 +1178,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1164,6 +1195,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1179,6 +1212,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: Some(72),
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1194,6 +1229,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: Some(123_456),
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1209,6 +1246,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1224,6 +1263,8 @@ mod tests {
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 context_window_percent: None,
                 context_window_used_tokens: None,
+                prompt_suggestions_enabled: false,
+                prompt_suggestions_autorun: false,
             },
         );
 
@@ -1237,6 +1278,8 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            prompt_suggestions_enabled: false,
+            prompt_suggestions_autorun: false,
         };
 
         snapshot_footer_with_mode_indicator(
@@ -1263,6 +1306,8 @@ mod tests {
             quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
             context_window_percent: None,
             context_window_used_tokens: None,
+            prompt_suggestions_enabled: false,
+            prompt_suggestions_autorun: false,
         };
 
         snapshot_footer_with_mode_indicator(

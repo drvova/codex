@@ -16,7 +16,6 @@ impl PromptSuggestionGate {
     pub fn can_autorun(self) -> bool {
         self.autorun_enabled
             && self.suggestions_enabled
-            && self.intent
             && !self.is_review_mode
             && !self.task_running
             && self.composer_empty

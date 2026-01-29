@@ -287,6 +287,8 @@ pub(crate) struct ChatComposer {
     footer_flash: Option<FooterFlash>,
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
+    prompt_suggestions_enabled: bool,
+    prompt_suggestions_autorun: bool,
     skills: Option<Vec<SkillMetadata>>,
     dismissed_skill_popup_token: Option<String>,
     /// When enabled, `Enter` submits immediately and `Tab` requests queuing behavior.
@@ -379,6 +381,8 @@ impl ChatComposer {
             footer_flash: None,
             context_window_percent: None,
             context_window_used_tokens: None,
+            prompt_suggestions_enabled: false,
+            prompt_suggestions_autorun: false,
             skills: None,
             dismissed_skill_popup_token: None,
             steer_enabled: false,
@@ -2524,6 +2528,8 @@ impl ChatComposer {
             is_wsl,
             context_window_percent: self.context_window_percent,
             context_window_used_tokens: self.context_window_used_tokens,
+            prompt_suggestions_enabled: self.prompt_suggestions_enabled,
+            prompt_suggestions_autorun: self.prompt_suggestions_autorun,
         }
     }
 
@@ -2893,6 +2899,21 @@ impl ChatComposer {
         self.context_window_used_tokens = used_tokens;
     }
 
+    pub(crate) fn set_prompt_suggestions_status(
+        &mut self,
+        enabled: bool,
+        autorun_enabled: bool,
+    ) -> bool {
+        if self.prompt_suggestions_enabled == enabled
+            && self.prompt_suggestions_autorun == autorun_enabled
+        {
+            return false;
+        }
+        self.prompt_suggestions_enabled = enabled;
+        self.prompt_suggestions_autorun = autorun_enabled;
+        true
+    }
+
     pub(crate) fn set_esc_backtrack_hint(&mut self, show: bool) {
         self.esc_backtrack_hint = show;
         if show {
@@ -2969,6 +2990,8 @@ impl Renderable for ChatComposer {
                 let context_line = context_window_line(
                     footer_props.context_window_percent,
                     footer_props.context_window_used_tokens,
+                    footer_props.prompt_suggestions_enabled,
+                    footer_props.prompt_suggestions_autorun,
                 );
                 let context_width = context_line.width() as u16;
                 let custom_height = self.custom_footer_height();

@@ -611,6 +611,15 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    pub(crate) fn set_prompt_suggestions_status(&mut self, enabled: bool, autorun_enabled: bool) {
+        if self
+            .composer
+            .set_prompt_suggestions_status(enabled, autorun_enabled)
+        {
+            self.request_redraw();
+        }
+    }
+
     /// Show a generic list selection view with the provided items.
     pub(crate) fn show_selection_view(&mut self, params: list_selection_view::SelectionViewParams) {
         let view = list_selection_view::ListSelectionView::new(params, self.app_event_tx.clone());

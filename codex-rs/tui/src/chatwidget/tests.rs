@@ -891,7 +891,7 @@ async fn worked_elapsed_from_resets_when_timer_restarts() {
 }
 
 #[tokio::test]
-async fn prompt_suggestion_autorun_requires_intent() {
+async fn prompt_suggestion_autorun_when_enabled() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.config.features.enable(Feature::PromptSuggestions);
     chat.config
@@ -906,18 +906,19 @@ async fn prompt_suggestion_autorun_requires_intent() {
     };
     chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
 
-    assert!(chat.queued_user_messages.is_empty());
-    let latest = chat
-        .latest_prompt_suggestion
-        .as_ref()
-        .expect("expected latest suggestion");
-    assert_eq!(latest.suggestion, "try this");
-    assert_eq!(latest.origin, PromptSuggestionOrigin::Llm);
-    assert_eq!(latest.context, PromptSuggestionContext::LastAssistant);
+    assert!(chat.latest_prompt_suggestion.is_none());
+    assert_eq!(chat.queued_user_messages.len(), 1);
+    assert_eq!(
+        chat.queued_user_messages
+            .front()
+            .expect("queued user message")
+            .text,
+        "try this"
+    );
 }
 
 #[tokio::test]
-async fn prompt_suggestion_autorun_with_intent() {
+async fn prompt_suggestion_autorun_clears_intent() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.config.features.enable(Feature::PromptSuggestions);
     chat.config
@@ -956,18 +957,6 @@ async fn prompt_suggestion_intent_clears_on_input() {
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
     assert!(!chat.prompt_suggestions_intent);
-
-    chat.set_composer_text(String::new(), Vec::new(), Vec::new());
-    chat.last_completed_turn_id = Some("turn-1".to_string());
-    let event = PromptSuggestionEvent {
-        suggestion: "should not autorun".to_string(),
-        origin: PromptSuggestionOrigin::Llm,
-        context: PromptSuggestionContext::LastAssistant,
-    };
-    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
-
-    assert!(chat.queued_user_messages.is_empty());
-    assert!(chat.latest_prompt_suggestion.is_some());
 }
 
 #[tokio::test]
@@ -986,35 +975,6 @@ async fn prompt_suggestion_intent_clears_on_multiline_paste() {
 
     chat.handle_paste("line one\nline two\nline three\n".to_string());
     assert!(!chat.prompt_suggestions_intent);
-
-    chat.set_composer_text(String::new(), Vec::new(), Vec::new());
-    let event = PromptSuggestionEvent {
-        suggestion: "should not autorun".to_string(),
-        origin: PromptSuggestionOrigin::Llm,
-        context: PromptSuggestionContext::LastAssistant,
-    };
-    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
-    assert!(chat.queued_user_messages.is_empty());
-    assert!(chat.latest_prompt_suggestion.is_some());
-
-    open_prompt_suggestions_via_command(&mut chat);
-    assert!(!chat.bottom_pane.no_modal_or_popup_active());
-    chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(chat.bottom_pane.no_modal_or_popup_active());
-    let event = PromptSuggestionEvent {
-        suggestion: "autorun after intent".to_string(),
-        origin: PromptSuggestionOrigin::Llm,
-        context: PromptSuggestionContext::LastAssistant,
-    };
-    chat.on_prompt_suggestion(Some("turn-1".to_string()), event);
-    assert_eq!(chat.queued_user_messages.len(), 1);
-    assert_eq!(
-        chat.queued_user_messages
-            .front()
-            .expect("queued user message")
-            .text,
-        "autorun after intent"
-    );
 }
 
 fn open_prompt_suggestions_via_command(chat: &mut ChatWidget) {
