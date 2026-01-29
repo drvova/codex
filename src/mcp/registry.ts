@@ -391,6 +391,7 @@ export const createRegistryManager = (
   let registry: ToolRegistry | null = null;
   let lastUpdated = 0;
   let inflight: Promise<ToolRegistry> | null = null;
+  let generation = 0;
   let lastQuery = defaults.query ?? "tool";
   let lastServer = defaults.server;
   let lastLimit = defaults.limit ?? 200;
@@ -437,6 +438,7 @@ export const createRegistryManager = (
     const nextServer =
       options.server === undefined ? lastServer : options.server;
     const nextLimit = options.limit ?? lastLimit ?? 200;
+    const refreshGeneration = generation;
     inflight = refreshRegistry(mcpSearch, {
       query: nextQuery,
       server: nextServer,
@@ -444,6 +446,9 @@ export const createRegistryManager = (
       riskClassifier,
     })
       .then((nextRegistry) => {
+        if (refreshGeneration !== generation) {
+          return nextRegistry;
+        }
         registry = nextRegistry;
         lastUpdated = Date.now();
         lastQuery = nextQuery;
@@ -466,8 +471,10 @@ export const createRegistryManager = (
     },
     refresh: async (options = {}) => doRefresh(options),
     invalidate: () => {
+      generation += 1;
       registry = null;
       lastUpdated = 0;
+      inflight = null;
     },
     lastUpdated: () => (lastUpdated === 0 ? null : lastUpdated),
   };
