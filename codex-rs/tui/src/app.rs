@@ -111,6 +111,7 @@ const MCP_SEARCH_TOOL_NAME: &str = "MCPSearch";
 pub struct AppExitInfo {
     pub token_usage: TokenUsage,
     pub thread_id: Option<ThreadId>,
+    pub thread_name: Option<String>,
     pub update_action: Option<UpdateAction>,
     pub exit_reason: ExitReason,
 }
@@ -120,6 +121,7 @@ impl AppExitInfo {
         Self {
             token_usage: TokenUsage::default(),
             thread_id: None,
+            thread_name: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(message.into()),
         }
@@ -138,13 +140,17 @@ pub enum ExitReason {
     Fatal(String),
 }
 
-fn session_summary(token_usage: TokenUsage, thread_id: Option<ThreadId>) -> Option<SessionSummary> {
+fn session_summary(
+    token_usage: TokenUsage,
+    thread_id: Option<ThreadId>,
+    thread_name: Option<String>,
+) -> Option<SessionSummary> {
     if token_usage.is_zero() {
         return None;
     }
 
     let usage_line = FinalOutput::from(token_usage).to_string();
-    let resume_command = thread_id.map(|thread_id| format!("codex resume {thread_id}"));
+    let resume_command = codex_core::util::resume_command(thread_name.as_deref(), thread_id);
     Some(SessionSummary {
         usage_line,
         resume_command,
@@ -499,6 +505,7 @@ async fn handle_model_migration_prompt_if_needed(
                 return Some(AppExitInfo {
                     token_usage: TokenUsage::default(),
                     thread_id: None,
+                    thread_name: None,
                     update_action: None,
                     exit_reason: ExitReason::UserRequested,
                 });
@@ -980,7 +987,7 @@ impl App {
             model.as_str(),
             auth_ref.and_then(CodexAuth::get_account_id),
             auth_ref.and_then(CodexAuth::get_account_email),
-            auth_ref.map(|auth| auth.mode),
+            auth_ref.map(CodexAuth::api_auth_mode),
             config.otel.log_user_prompt,
             codex_core::terminal::user_agent(),
             SessionSource::Cli,
@@ -1211,6 +1218,7 @@ impl App {
         Ok(AppExitInfo {
             token_usage: app.token_usage(),
             thread_id: app.chat_widget.thread_id(),
+            thread_name: app.chat_widget.thread_name(),
             update_action: app.pending_update_action,
             exit_reason,
         })
@@ -1272,8 +1280,11 @@ impl App {
         match event {
             AppEvent::NewSession => {
                 let model = self.chat_widget.current_model().to_string();
-                let summary =
-                    session_summary(self.chat_widget.token_usage(), self.chat_widget.thread_id());
+                let summary = session_summary(
+                    self.chat_widget.token_usage(),
+                    self.chat_widget.thread_id(),
+                    self.chat_widget.thread_name(),
+                );
                 self.shutdown_current_thread().await;
                 if let Err(err) = self.server.remove_and_close_all_threads().await {
                     tracing::warn!(error = %err, "failed to close all threads");
@@ -1346,6 +1357,7 @@ impl App {
                         let summary = session_summary(
                             self.chat_widget.token_usage(),
                             self.chat_widget.thread_id(),
+                            self.chat_widget.thread_name(),
                         );
                         match self
                             .server
@@ -1404,8 +1416,11 @@ impl App {
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::ForkCurrentSession => {
-                let summary =
-                    session_summary(self.chat_widget.token_usage(), self.chat_widget.thread_id());
+                let summary = session_summary(
+                    self.chat_widget.token_usage(),
+                    self.chat_widget.thread_id(),
+                    self.chat_widget.thread_name(),
+                );
                 if let Some(path) = self.chat_widget.rollout_path() {
                     match self
                         .server
@@ -2438,6 +2453,7 @@ impl App {
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
                 session_id: thread_id,
                 forked_from_id: None,
+                thread_name: None,
                 model: config_snapshot.model,
                 model_provider_id: config_snapshot.model_provider_id,
                 approval_policy: config_snapshot.approval_policy,
@@ -3105,6 +3121,7 @@ mod tests {
             let event = SessionConfiguredEvent {
                 session_id: ThreadId::new(),
                 forked_from_id: None,
+                thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
@@ -3157,6 +3174,7 @@ mod tests {
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
                 session_id: base_id,
                 forked_from_id: None,
+                thread_name: None,
                 model: "gpt-test".to_string(),
                 model_provider_id: "test-provider".to_string(),
                 approval_policy: AskForApproval::Never,
@@ -3202,6 +3220,7 @@ mod tests {
         let event = SessionConfiguredEvent {
             session_id: thread_id,
             forked_from_id: None,
+            thread_name: None,
             model: "gpt-test".to_string(),
             model_provider_id: "test-provider".to_string(),
             approval_policy: AskForApproval::Never,
@@ -3233,7 +3252,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_summary_skip_zero_usage() {
-        assert!(session_summary(TokenUsage::default(), None).is_none());
+        assert!(session_summary(TokenUsage::default(), None, None).is_none());
     }
 
     #[tokio::test]
@@ -3246,7 +3265,7 @@ mod tests {
         };
         let conversation = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap();
 
-        let summary = session_summary(usage, Some(conversation)).expect("summary");
+        let summary = session_summary(usage, Some(conversation), None).expect("summary");
         assert_eq!(
             summary.usage_line,
             "Token usage: total=12 input=10 output=2"
@@ -3254,6 +3273,24 @@ mod tests {
         assert_eq!(
             summary.resume_command,
             Some("codex resume 123e4567-e89b-12d3-a456-426614174000".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn session_summary_prefers_name_over_id() {
+        let usage = TokenUsage {
+            input_tokens: 10,
+            output_tokens: 2,
+            total_tokens: 12,
+            ..Default::default()
+        };
+        let conversation = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap();
+
+        let summary = session_summary(usage, Some(conversation), Some("my-session".to_string()))
+            .expect("summary");
+        assert_eq!(
+            summary.resume_command,
+            Some("codex resume my-session".to_string())
         );
     }
 }

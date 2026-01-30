@@ -94,7 +94,6 @@ async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> 
             "id": "confirm_path",
             "header": "Confirm",
             "question": "Proceed with the plan?",
-            "isOther": false,
             "options": [{
                 "label": "Yes (Recommended)",
                 "description": "Continue the current plan."
@@ -155,6 +154,7 @@ async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> 
     .await;
     assert_eq!(request.call_id, call_id);
     assert_eq!(request.questions.len(), 1);
+    assert_eq!(request.questions[0].is_other, true);
 
     let mut answers = HashMap::new();
     answers.insert(
@@ -216,7 +216,6 @@ where
             "id": "confirm_path",
             "header": "Confirm",
             "question": "Proceed with the plan?",
-            "isOther": false,
             "options": [{
                 "label": "Yes (Recommended)",
                 "description": "Continue the current plan."

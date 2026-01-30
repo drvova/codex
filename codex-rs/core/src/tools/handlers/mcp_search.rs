@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
 
@@ -569,7 +570,7 @@ async fn resolve_query(
 }
 
 async fn route_query(
-    session: &crate::codex::Session,
+    session: Arc<crate::codex::Session>,
     turn: &crate::codex::TurnContext,
     call_id: &str,
     query: &str,
@@ -665,7 +666,7 @@ async fn route_query(
             };
             let routed_call_id = format!("{call_id}:route:{}", Uuid::new_v4());
             let response = handle_mcp_tool_call(
-                session,
+                session.clone(),
                 turn,
                 routed_call_id,
                 best.server.clone(),
@@ -916,7 +917,7 @@ impl ToolHandler for McpSearchHandler {
                 .filter(|val| !val.is_empty());
             let limit = args.limit.min(MAX_LIMIT);
             let RouteOutput { response, success } = route_query(
-                session.as_ref(),
+                session.clone(),
                 turn.as_ref(),
                 &call_id,
                 &query,
@@ -971,7 +972,7 @@ impl ToolHandler for McpSearchHandler {
             };
 
             let response = handle_mcp_tool_call(
-                session.as_ref(),
+                session.clone(),
                 turn.as_ref(),
                 call_id.clone(),
                 server,

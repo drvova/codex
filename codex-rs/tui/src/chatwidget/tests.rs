@@ -137,6 +137,7 @@ async fn resumed_initial_messages_render_history() {
     let configured = codex_core::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -203,6 +204,7 @@ async fn replayed_user_message_preserves_text_elements_and_local_images() {
     let configured = codex_core::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -255,6 +257,7 @@ async fn submission_preserves_text_elements_and_local_images() {
     let configured = codex_core::protocol::SessionConfiguredEvent {
         session_id: conversation_id,
         forked_from_id: None,
+        thread_name: None,
         model: "test-model".to_string(),
         model_provider_id: "test-provider".to_string(),
         approval_policy: AskForApproval::Never,
@@ -825,6 +828,7 @@ async fn make_chatwidget_manual(
         skills_initial_state: None,
         last_unified_wait: None,
         unified_exec_wait_streak: None,
+        unified_exec_processes: Vec::new(),
         task_complete_pending: false,
         latest_prompt_suggestion: None,
         prompt_suggestion_history_depth: None,
@@ -841,6 +845,7 @@ async fn make_chatwidget_manual(
         current_status_header: String::from("Working"),
         retry_status_header: None,
         thread_id: None,
+        thread_name: None,
         forked_from: None,
         frame_requester: FrameRequester::test_dummy(),
         show_welcome_banner: true,
