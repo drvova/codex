@@ -1253,6 +1253,7 @@ mod tests {
             header: header.to_string(),
             question: "Choose an option.".to_string(),
             is_other: false,
+            is_secret: false,
             options: Some(vec![
                 RequestUserInputQuestionOption {
                     label: "Option 1".to_string(),
@@ -1276,6 +1277,7 @@ mod tests {
             header: header.to_string(),
             question: "Choose an option.".to_string(),
             is_other: true,
+            is_secret: false,
             options: Some(vec![
                 RequestUserInputQuestionOption {
                     label: "Option 1".to_string(),
@@ -1299,6 +1301,7 @@ mod tests {
             header: header.to_string(),
             question: "Choose the next step for this task.".to_string(),
             is_other: false,
+            is_secret: false,
             options: Some(vec![
                 RequestUserInputQuestionOption {
                     label: "Discuss a code change".to_string(),
@@ -1328,6 +1331,7 @@ mod tests {
             header: header.to_string(),
             question: "Share details.".to_string(),
             is_other: false,
+            is_secret: false,
             options: None,
         }
     }
@@ -2387,6 +2391,7 @@ mod tests {
                     header: "Next Step".to_string(),
                     question: "What would you like to do next?".to_string(),
                     is_other: false,
+                    is_secret: false,
                     options: Some(vec![
                         RequestUserInputQuestionOption {
                             label: "Discuss a code change (Recommended)".to_string(),
@@ -2438,6 +2443,7 @@ mod tests {
                     header: "Next Step".to_string(),
                     question: "What would you like to do next?".to_string(),
                     is_other: false,
+                    is_secret: false,
                     options: Some(vec![
                         RequestUserInputQuestionOption {
                             label: "Discuss a code change (Recommended)".to_string(),

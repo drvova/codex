@@ -610,6 +610,7 @@ mod tests {
             header: "Clarify".to_string(),
             question: "What should the modal title be?".to_string(),
             is_other: false,
+            is_secret: false,
             options: None,
         }
     }
@@ -620,6 +621,7 @@ mod tests {
             header: "Clarify".to_string(),
             question: text.to_string(),
             is_other: false,
+            is_secret: false,
             options: None,
         }
     }

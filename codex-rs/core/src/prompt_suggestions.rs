@@ -108,7 +108,7 @@ async fn generate_and_emit_prompt_suggestion(
 
     let output_schema = match turn_context.client.get_provider().wire_api {
         WireApi::Chat => None,
-        WireApi::Responses | WireApi::ResponsesWebsocket => Some(prompt_suggestion_schema()),
+        WireApi::Responses => Some(prompt_suggestion_schema()),
     };
 
     let prompt = Prompt {

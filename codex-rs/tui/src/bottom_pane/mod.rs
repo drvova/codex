@@ -75,6 +75,7 @@ pub(crate) use footer::CollaborationModeIndicator;
 pub(crate) use list_selection_view::SelectionViewParams;
 pub(crate) use mcp_search_toggle_view::McpSearchToggleView;
 mod feedback_view;
+pub(crate) use feedback_view::FeedbackAudience;
 pub(crate) use feedback_view::feedback_disabled_params;
 pub(crate) use feedback_view::feedback_selection_params;
 pub(crate) use feedback_view::feedback_upload_consent_params;

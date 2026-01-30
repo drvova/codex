@@ -28,6 +28,7 @@ pub enum SlashCommand {
     Fork,
     Init,
     Compact,
+    Plan,
     Collab,
     Agent,
     // Undo,
@@ -68,6 +69,7 @@ impl SlashCommand {
             SlashCommand::Ps => "view background terminals",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Personality => "choose a communication style for Codex",
+            SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::SubagentModel => {
                 "choose the model and reasoning effort used by spawned subagents"
             }
@@ -126,6 +128,7 @@ impl SlashCommand {
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
+            SlashCommand::Plan => true,
             SlashCommand::Collab => true,
             SlashCommand::Agent => true,
         }
