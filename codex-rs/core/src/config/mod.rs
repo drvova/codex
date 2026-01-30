@@ -1566,6 +1566,7 @@ impl Config {
             approval_policy: mut constrained_approval_policy,
             sandbox_policy: mut constrained_sandbox_policy,
             mcp_servers,
+            exec_policy: _,
         } = requirements;
 
         constrained_approval_policy
