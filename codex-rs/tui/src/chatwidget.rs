@@ -1429,7 +1429,7 @@ impl ChatWidget {
             cleared_background = true;
         }
         if cleared_background {
-            self.sync_unified_exec_footer();
+            self.clear_unified_exec_processes();
             self.update_task_running_state();
         }
 
@@ -3084,6 +3084,7 @@ impl ChatWidget {
                 self.open_prompt_suggestions_view(self.latest_prompt_suggestion.clone());
             }
             SlashCommand::Ps => {
+                self.show_background_terminals_view();
                 self.add_ps_output();
             }
             SlashCommand::Mcp => {
