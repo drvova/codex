@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,7 @@ pub(crate) struct ToolCallRuntime {
     turn_context: Arc<TurnContext>,
     tracker: SharedTurnDiffTracker,
     parallel_execution: Arc<RwLock<()>>,
+    ask_user_serial: Arc<Mutex<()>>,
 }
 
 impl ToolCallRuntime {
@@ -42,6 +44,7 @@ impl ToolCallRuntime {
             turn_context,
             tracker,
             parallel_execution: Arc::new(RwLock::new(())),
+            ask_user_serial: Arc::new(Mutex::new(())),
         }
     }
 
@@ -51,13 +54,17 @@ impl ToolCallRuntime {
         call: ToolCall,
         cancellation_token: CancellationToken,
     ) -> impl std::future::Future<Output = Result<ResponseInputItem, CodexErr>> {
-        let supports_parallel = self.router.tool_supports_parallel(&call.tool_name);
+        const REQUEST_USER_INPUT_TOOL: &str = "request_user_input";
+
+        let is_ask_user = call.tool_name == REQUEST_USER_INPUT_TOOL;
+        let supports_parallel = self.router.tool_supports_parallel(&call.tool_name) || is_ask_user;
 
         let router = Arc::clone(&self.router);
         let session = Arc::clone(&self.session);
         let turn = Arc::clone(&self.turn_context);
         let tracker = Arc::clone(&self.tracker);
         let lock = Arc::clone(&self.parallel_execution);
+        let ask_user_lock = Arc::clone(&self.ask_user_serial);
         let started = Instant::now();
 
         let dispatch_span = trace_span!(
@@ -77,6 +84,11 @@ impl ToolCallRuntime {
                         Ok(Self::aborted_response(&call, secs))
                     },
                     res = async {
+                        let _ask_user_guard = if is_ask_user {
+                            Some(ask_user_lock.lock().await)
+                        } else {
+                            None
+                        };
                         let _guard = if supports_parallel {
                             Either::Left(lock.read().await)
                         } else {

@@ -1496,7 +1496,7 @@ pub(crate) fn build_specs(
     builder.register_handler("update_plan", plan_handler);
 
     if config.collaboration_modes_tools {
-        builder.push_spec(create_request_user_input_tool());
+        builder.push_spec_with_parallel_support(create_request_user_input_tool(), true);
         builder.register_handler("request_user_input", request_user_input_handler);
     }
 
@@ -1756,7 +1756,7 @@ mod tests {
         // Build expected from the same helpers used by the builder.
         let mut expected: BTreeMap<String, ToolSpec> = BTreeMap::from([]);
         for spec in [
-            create_exec_command_tool(false),
+            create_exec_command_tool(true),
             create_write_stdin_tool(),
             PLAN_TOOL.clone(),
             create_request_user_input_tool(),
@@ -2144,6 +2144,27 @@ mod tests {
         assert!(find_tool(&tools, "grep_files").supports_parallel_tool_calls);
         assert!(find_tool(&tools, "list_dir").supports_parallel_tool_calls);
         assert!(find_tool(&tools, "read_file").supports_parallel_tool_calls);
+    }
+
+    #[test]
+    fn request_user_input_parallel_support_enabled() {
+        let config = test_config();
+        let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
+        let mut features = Features::with_defaults();
+        features.enable(Feature::UnifiedExec);
+        features.enable(Feature::CollaborationModes);
+        let tools_config = ToolsConfig::new(&ToolsConfigParams {
+            model_info: &model_info,
+            features: &features,
+            web_search_mode: Some(WebSearchMode::Cached),
+            disallowed_tools: &config.disallowed_tools,
+        });
+        let (tools, _) = build_specs(&tools_config, None, &[]).build();
+
+        assert!(
+            find_tool(&tools, "request_user_input").supports_parallel_tool_calls,
+            "request_user_input should be marked as parallel-capable"
+        );
     }
 
     #[test]
@@ -2696,7 +2717,7 @@ mod tests {
 
     #[test]
     fn test_shell_tool() {
-        let tool = super::create_shell_tool(false);
+        let tool = super::create_shell_tool(true);
         let ToolSpec::Function(ResponsesApiTool {
             description, name, ..
         }) = &tool
@@ -2726,7 +2747,7 @@ Examples of valid command strings:
 
     #[test]
     fn test_shell_command_tool() {
-        let tool = super::create_shell_command_tool(false);
+        let tool = super::create_shell_command_tool(true);
         let ToolSpec::Function(ResponsesApiTool {
             description, name, ..
         }) = &tool
