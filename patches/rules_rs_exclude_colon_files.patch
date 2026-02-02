@@ -1,0 +1,12 @@
+diff --git a/rs/rust_crate.bzl b/rs/rust_crate.bzl
+--- a/rs/rust_crate.bzl
++++ b/rs/rust_crate.bzl
+@@ -23,6 +23,7 @@ def rust_crate(
+     compile_data = native.glob(
+         include = ["**"],
+         exclude = [
+             "**/* *",
++            "**/*:*",
+             ".tmp_git_root/**/*",
+             "BUILD",
+             "BUILD.bazel",
