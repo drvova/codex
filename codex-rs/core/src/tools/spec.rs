@@ -244,6 +244,14 @@ fn create_exec_command_tool(include_prefix_rule: bool) -> ToolSpec {
             }
         ),
         (
+            "interactive".to_string(),
+            JsonSchema::Boolean {
+                description: Some(
+                    "Whether the command is interactive. When set, this overrides `tty` and selects PTY (true) or pipes (false).".to_string(),
+                ),
+            },
+        ),
+        (
             "yield_time_ms".to_string(),
             JsonSchema::Number {
                 description: Some(

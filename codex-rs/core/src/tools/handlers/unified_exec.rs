@@ -35,6 +35,8 @@ struct ExecCommandArgs {
     login: bool,
     #[serde(default = "default_tty")]
     tty: bool,
+    #[serde(default)]
+    interactive: Option<bool>,
     #[serde(default = "default_exec_yield_time_ms")]
     yield_time_ms: u64,
     #[serde(default)]
@@ -73,6 +75,10 @@ fn default_login() -> bool {
 
 fn default_tty() -> bool {
     false
+}
+
+fn resolve_tty(args: &ExecCommandArgs) -> bool {
+    args.interactive.unwrap_or(args.tty)
 }
 
 #[async_trait]
@@ -129,10 +135,10 @@ impl ToolHandler for UnifiedExecHandler {
                 let args: ExecCommandArgs = parse_arguments(&arguments)?;
                 let process_id = manager.allocate_process_id().await;
                 let command = get_command(&args, session.user_shell());
+                let tty = resolve_tty(&args);
 
                 let ExecCommandArgs {
                     workdir,
-                    tty,
                     yield_time_ms,
                     max_output_tokens,
                     sandbox_permissions,
@@ -352,6 +358,33 @@ mod tests {
         let command = get_command(&args, Arc::new(default_user_shell()));
 
         assert_eq!(command[2], "echo hello");
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_tty_prefers_interactive_flag() -> anyhow::Result<()> {
+        let json = r#"{"cmd": "echo hello", "tty": false, "interactive": true}"#;
+        let args: ExecCommandArgs = parse_arguments(json)?;
+
+        assert!(resolve_tty(&args));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_tty_falls_back_to_tty_when_interactive_missing() -> anyhow::Result<()> {
+        let json = r#"{"cmd": "echo hello", "tty": true}"#;
+        let args: ExecCommandArgs = parse_arguments(json)?;
+
+        assert!(resolve_tty(&args));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_tty_defaults_to_false() -> anyhow::Result<()> {
+        let json = r#"{"cmd": "echo hello"}"#;
+        let args: ExecCommandArgs = parse_arguments(json)?;
+
+        assert!(!resolve_tty(&args));
         Ok(())
     }
 }
