@@ -24,6 +24,7 @@ pub(crate) struct SessionState {
     /// TODO(owen): This is a temporary solution to avoid updating a thread's updated_at
     /// timestamp when resuming a session. Remove this once SQLite is in place.
     pub(crate) initial_context_seeded: bool,
+    pub(crate) pending_resumed_rollout: Option<std::path::PathBuf>,
 }
 
 impl SessionState {
@@ -38,6 +39,7 @@ impl SessionState {
             dependency_env: HashMap::new(),
             mcp_dependency_prompted: HashSet::new(),
             initial_context_seeded: false,
+            pending_resumed_rollout: None,
         }
     }
 

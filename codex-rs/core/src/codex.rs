@@ -1112,6 +1112,13 @@ impl Session {
                 self.flush_rollout().await;
             }
             InitialHistory::Resumed(resumed_history) => {
+                if resumed_history.is_lazy {
+                    let mut state = self.state.lock().await;
+                    state.initial_context_seeded = false;
+                    state.pending_resumed_rollout = Some(resumed_history.rollout_path.clone());
+                    return;
+                }
+
                 let rollout_items = resumed_history.history;
                 {
                     let mut state = self.state.lock().await;
@@ -1508,6 +1515,12 @@ impl Session {
         }
     }
 
+    pub(crate) async fn send_event_unrecorded(&self, event: Event) {
+        if let Err(e) = self.tx_event.send(event).await {
+            debug!("dropping event because channel is closed: {e}");
+        }
+    }
+
     /// Persist the event to the rollout file, flush it, and only then deliver it to clients.
     ///
     /// Most events can be delivered immediately after queueing the rollout write, but some
@@ -1896,7 +1909,103 @@ impl Session {
         state.replace_history(items);
     }
 
+    async fn ensure_resumed_history_loaded(&self, turn_context: &TurnContext) {
+        let rollout_path = {
+            let mut state = self.state.lock().await;
+            state.pending_resumed_rollout.take()
+        };
+        let Some(rollout_path) = rollout_path else {
+            return;
+        };
+
+        let (rollout_items, _thread_id, parse_errors) = match RolloutRecorder::load_rollout_items(
+            &rollout_path,
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                warn!(
+                    "failed to load resumed rollout at {}: {err}",
+                    rollout_path.display()
+                );
+                self.send_event_raw(Event {
+                    id: turn_context.sub_id.clone(),
+                    msg: EventMsg::Warning(WarningEvent {
+                        message: format!(
+                            "Failed to load prior session history from {}. Continuing without it.",
+                            rollout_path.display()
+                        ),
+                    }),
+                })
+                .await;
+                return;
+            }
+        };
+
+        if parse_errors > 0 {
+            warn!(
+                "resumed rollout had {parse_errors} parse errors at {}",
+                rollout_path.display()
+            );
+        }
+
+        if rollout_items.is_empty() {
+            return;
+        }
+
+        if let Some(prev) = rollout_items.iter().rev().find_map(|it| {
+            if let RolloutItem::TurnContext(ctx) = it {
+                Some(ctx.model.as_str())
+            } else {
+                None
+            }
+        }) {
+            let curr = turn_context.client.get_model();
+            if prev != curr {
+                warn!("resuming session with different model: previous={prev}, current={curr}");
+                self.send_event(
+                    turn_context,
+                    EventMsg::Warning(WarningEvent {
+                        message: format!(
+                            "This session was recorded with model `{prev}` but is resuming with `{curr}`. \
+                         Consider switching back to `{prev}` as it may affect Codex performance."
+                        ),
+                    }),
+                )
+                .await;
+            }
+        }
+
+        let reconstructed_history = self
+            .reconstruct_history_from_rollout(turn_context, &rollout_items)
+            .await;
+        if !reconstructed_history.is_empty() {
+            self.record_into_history(&reconstructed_history, turn_context)
+                .await;
+        }
+
+        if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
+            let mut state = self.state.lock().await;
+            state.set_token_info(Some(info));
+        }
+
+        for event in rollout_items.into_iter().filter_map(|item| match item {
+            RolloutItem::EventMsg(event) => Some(event),
+            _ => None,
+        }) {
+            self.send_event_unrecorded(Event {
+                id: INITIAL_SUBMIT_ID.to_owned(),
+                msg: event,
+            })
+            .await;
+        }
+
+        self.flush_rollout().await;
+    }
+
     pub(crate) async fn seed_initial_context_if_needed(&self, turn_context: &TurnContext) {
+        self.ensure_resumed_history_loaded(turn_context).await;
         {
             let mut state = self.state.lock().await;
             if state.initial_context_seeded {
@@ -3082,6 +3191,7 @@ mod handlers {
         }
 
         let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
+        sess.ensure_resumed_history_loaded(&turn_context).await;
 
         let mut history = sess.clone_history().await;
         history.drop_last_n_user_turns(num_turns);
@@ -5266,6 +5376,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                is_lazy: false,
             }))
             .await;
 
@@ -5283,6 +5394,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                is_lazy: false,
             }))
             .await;
 
@@ -5369,6 +5481,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                is_lazy: false,
             }))
             .await;
 

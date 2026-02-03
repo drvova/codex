@@ -221,7 +221,8 @@ impl ThreadManager {
         rollout_path: PathBuf,
         auth_manager: Arc<AuthManager>,
     ) -> CodexResult<NewThread> {
-        let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
+        let initial_history =
+            RolloutRecorder::get_rollout_history_for_resume(&rollout_path).await?;
         self.resume_thread_with_history(config, initial_history, auth_manager)
             .await
     }

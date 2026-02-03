@@ -29,6 +29,7 @@ use super::list::ThreadSortKey;
 use super::list::ThreadsPage;
 use super::list::get_threads;
 use super::list::get_threads_in_root;
+use super::list::read_session_meta_line;
 use super::metadata;
 use super::policy::is_persisted_response_item;
 use crate::config::Config;
@@ -75,6 +76,9 @@ pub enum RolloutRecorderParams {
         path: PathBuf,
     },
 }
+
+/// Rollouts larger than this size are lazily replayed on resume to reduce startup latency.
+const LAZY_RESUME_MIN_BYTES: u64 = 5 * 1024 * 1024;
 
 enum RolloutCmd {
     AddItems(Vec<RolloutItem>),
@@ -443,6 +447,32 @@ impl RolloutRecorder {
         Ok((items, thread_id, parse_errors))
     }
 
+    pub async fn get_rollout_history_for_resume(path: &Path) -> std::io::Result<InitialHistory> {
+        let metadata = tokio::fs::metadata(path).await?;
+        if metadata.len() >= LAZY_RESUME_MIN_BYTES {
+            return Self::get_rollout_history_lazy(path).await;
+        }
+        Self::get_rollout_history(path).await
+    }
+
+    pub async fn get_rollout_history_lazy(path: &Path) -> std::io::Result<InitialHistory> {
+        let metadata = tokio::fs::metadata(path).await?;
+        if metadata.len() == 0 {
+            return Ok(InitialHistory::New);
+        }
+
+        let session_meta = read_session_meta_line(path).await?;
+        let conversation_id = session_meta.meta.id;
+        let history = vec![RolloutItem::SessionMeta(session_meta)];
+
+        Ok(InitialHistory::Resumed(ResumedHistory {
+            conversation_id,
+            history,
+            rollout_path: path.to_path_buf(),
+            is_lazy: true,
+        }))
+    }
+
     pub async fn get_rollout_history(path: &Path) -> std::io::Result<InitialHistory> {
         let (items, thread_id, _parse_errors) = Self::load_rollout_items(path).await?;
         let conversation_id = thread_id
@@ -457,6 +487,7 @@ impl RolloutRecorder {
             conversation_id,
             history: items,
             rollout_path: path.to_path_buf(),
+            is_lazy: false,
         }))
     }
 

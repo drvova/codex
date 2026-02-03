@@ -1528,6 +1528,8 @@ pub struct ResumedHistory {
     pub conversation_id: ThreadId,
     pub history: Vec<RolloutItem>,
     pub rollout_path: PathBuf,
+    #[serde(default)]
+    pub is_lazy: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
@@ -1573,16 +1575,21 @@ impl InitialHistory {
     pub fn get_event_msgs(&self) -> Option<Vec<EventMsg>> {
         match self {
             InitialHistory::New => None,
-            InitialHistory::Resumed(resumed) => Some(
-                resumed
-                    .history
-                    .iter()
-                    .filter_map(|ri| match ri {
-                        RolloutItem::EventMsg(ev) => Some(ev.clone()),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
+            InitialHistory::Resumed(resumed) => {
+                if resumed.is_lazy {
+                    return None;
+                }
+                Some(
+                    resumed
+                        .history
+                        .iter()
+                        .filter_map(|ri| match ri {
+                            RolloutItem::EventMsg(ev) => Some(ev.clone()),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            }
             InitialHistory::Forked(items) => Some(
                 items
                     .iter()
