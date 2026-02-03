@@ -99,7 +99,7 @@ impl ExperimentalFeaturesView {
             rows.push(GenericDisplayRow {
                 name,
                 description,
-                selected_description: Some(format!("{} · enter toggles", item.description)),
+                selected_description: Some(format!("{} · space toggles", item.description)),
                 ..Default::default()
             });
         }
@@ -236,11 +236,16 @@ impl BottomPaneView for ExperimentalFeaturesView {
                 code: KeyCode::End, ..
             } => self.jump_end(),
             KeyEvent {
-                code: KeyCode::Enter,
+                code: KeyCode::Char(' '),
                 modifiers: KeyModifiers::NONE,
                 ..
             } => self.toggle_selected(),
             KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            }
+            | KeyEvent {
                 code: KeyCode::Esc, ..
             } => {
                 self.on_ctrl_c();
@@ -347,8 +352,12 @@ impl Renderable for ExperimentalFeaturesView {
 
 fn experimental_popup_hint_line() -> Line<'static> {
     Line::from(vec![
-        key_hint::plain(KeyCode::Enter).into(),
+        key_hint::plain(KeyCode::Char(' ')).into(),
         " toggle · ".into(),
+        key_hint::plain(KeyCode::Enter).into(),
+        "/".into(),
+        key_hint::plain(KeyCode::Esc).into(),
+        " save · ".into(),
         key_hint::plain(KeyCode::PageUp).into(),
         "/".into(),
         key_hint::plain(KeyCode::PageDown).into(),
@@ -356,8 +365,6 @@ fn experimental_popup_hint_line() -> Line<'static> {
         key_hint::plain(KeyCode::Home).into(),
         "/".into(),
         key_hint::plain(KeyCode::End).into(),
-        " jump · ".into(),
-        key_hint::plain(KeyCode::Esc).into(),
-        " save".into(),
+        " jump".into(),
     ])
 }

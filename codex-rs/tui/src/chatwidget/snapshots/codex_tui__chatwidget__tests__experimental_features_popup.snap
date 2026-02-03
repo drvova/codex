@@ -5,7 +5,7 @@ expression: popup
   Experimental features
   Toggle experimental features. Changes are saved to config.toml.
 
-› [ ] Ghost snapshots  Capture undo snapshots each turn. · enter toggles
+› [ ] Ghost snapshots  Capture undo snapshots each turn. · space toggles
   [x] Shell tool       Allow the model to run shell commands.
 
-  enter toggle · pgup/pgdn scroll · home/end jump · esc save
+  space toggle · enter/esc save · pgup/pgdn scroll · home/end jump
