@@ -97,20 +97,44 @@ fn get_user_shell_path() -> Option<PathBuf> {
         let uid = getuid();
         let pw = getpwuid(uid);
 
-        if !pw.is_null() {
+        let passwd_shell = if !pw.is_null() {
             let shell_path = CStr::from_ptr((*pw).pw_shell)
                 .to_string_lossy()
                 .into_owned();
             Some(PathBuf::from(shell_path))
         } else {
             None
-        }
+        };
+
+        let shell_env = std::env::var("SHELL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from);
+
+        resolve_user_shell_path(crate::env::is_wsl(), shell_env, passwd_shell)
     }
 }
 
 #[cfg(not(unix))]
 fn get_user_shell_path() -> Option<PathBuf> {
     None
+}
+
+fn resolve_user_shell_path(
+    is_wsl: bool,
+    shell_env: Option<PathBuf>,
+    passwd_shell: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if is_wsl {
+        if let Some(shell_env) = shell_env
+            && detect_shell_type(&shell_env).is_some()
+            && file_exists(&shell_env).is_some()
+        {
+            return Some(shell_env);
+        }
+    }
+
+    passwd_shell
 }
 
 fn file_exists(path: &PathBuf) -> Option<PathBuf> {
@@ -363,9 +387,11 @@ mod detect_shell_type_tests {
 #[cfg(unix)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::Command;
+    use tempfile::TempDir;
 
     #[test]
     #[cfg(target_os = "macos")]
@@ -487,6 +513,45 @@ mod tests {
             test_powershell_shell.derive_exec_args("echo hello", true),
             vec!["pwsh.exe", "-Command", "echo hello"]
         );
+    }
+
+    fn create_shell_file(temp_dir: &TempDir, name: &str) -> PathBuf {
+        let path = temp_dir.path().join(name);
+        fs::write(&path, "").expect("write shell file");
+        path
+    }
+
+    #[test]
+    fn resolve_user_shell_path_wsl_prefers_shell_env() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let shell_env = create_shell_file(&temp_dir, "bash");
+        let passwd_shell = create_shell_file(&temp_dir, "zsh");
+
+        let resolved = resolve_user_shell_path(true, Some(shell_env.clone()), Some(passwd_shell));
+
+        assert_eq!(resolved, Some(shell_env));
+    }
+
+    #[test]
+    fn resolve_user_shell_path_wsl_invalid_env_falls_back() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let shell_env = create_shell_file(&temp_dir, "fish");
+        let passwd_shell = create_shell_file(&temp_dir, "bash");
+
+        let resolved = resolve_user_shell_path(true, Some(shell_env), Some(passwd_shell.clone()));
+
+        assert_eq!(resolved, Some(passwd_shell));
+    }
+
+    #[test]
+    fn resolve_user_shell_path_non_wsl_ignores_env() {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let shell_env = create_shell_file(&temp_dir, "bash");
+        let passwd_shell = create_shell_file(&temp_dir, "zsh");
+
+        let resolved = resolve_user_shell_path(false, Some(shell_env), Some(passwd_shell.clone()));
+
+        assert_eq!(resolved, Some(passwd_shell));
     }
 
     #[tokio::test]
