@@ -123,7 +123,9 @@ async fn generate_and_emit_prompt_suggestion(
         output_schema,
     };
 
-    let mut client_session = turn_context.client.new_session();
+    let mut client_session = turn_context
+        .client
+        .new_session(Some(turn_context.cwd.clone()));
     let mut stream = client_session.stream(&prompt).await?;
     let mut output_text = String::new();
     let mut last_message: Option<String> = None;

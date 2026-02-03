@@ -173,24 +173,25 @@ struct McpSearchRouteResponse {
 }
 
 fn serialize_input_schema(
-    mut input_schema: mcp_types::ToolInputSchema,
+    input_schema: &rmcp::model::JsonObject,
 ) -> Result<JsonValue, FunctionCallError> {
-    if input_schema.properties.is_none() {
-        input_schema.properties = Some(JsonValue::Object(serde_json::Map::new()));
+    let mut value = JsonValue::Object(input_schema.clone());
+    if let Some(object) = value.as_object_mut()
+        && !object.contains_key("properties")
+    {
+        object.insert(
+            "properties".to_string(),
+            JsonValue::Object(serde_json::Map::new()),
+        );
     }
-    let mut value = serde_json::to_value(input_schema).map_err(|err| {
-        FunctionCallError::RespondToModel(format!("failed to serialize input schema: {err}"))
-    })?;
     sanitize_json_schema(&mut value);
     Ok(value)
 }
 
 fn serialize_output_schema(
-    output_schema: mcp_types::ToolOutputSchema,
+    output_schema: &rmcp::model::JsonObject,
 ) -> Result<JsonValue, FunctionCallError> {
-    let mut value = serde_json::to_value(output_schema).map_err(|err| {
-        FunctionCallError::RespondToModel(format!("failed to serialize output schema: {err}"))
-    })?;
+    let mut value = JsonValue::Object(output_schema.clone());
     sanitize_json_schema(&mut value);
     Ok(value)
 }
@@ -460,16 +461,24 @@ fn infer_value_from_schema(
 fn infer_arguments(
     query: &str,
     urls: &[String],
-    input_schema: &mcp_types::ToolInputSchema,
+    input_schema: &rmcp::model::JsonObject,
 ) -> ArgumentInference {
     let mut arguments = serde_json::Map::new();
-    let required = input_schema.required.clone().unwrap_or_default();
+    let required = input_schema
+        .get("required")
+        .and_then(JsonValue::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let required_total = required.len();
     let mut typed_matches = 0;
 
-    let properties = input_schema
-        .properties
-        .as_ref()
+    let properties: Option<&serde_json::Map<String, JsonValue>> = input_schema
+        .get("properties")
         .and_then(JsonValue::as_object);
     let allow_query_fallback = required_total == 1;
 
@@ -590,7 +599,7 @@ async fn route_query(
             continue;
         }
 
-        let description = tool_info.tool.description.clone();
+        let description = tool_info.tool.description.as_deref().map(str::to_string);
         let description_lc = description.as_deref().unwrap_or("").to_lowercase();
         let tool_name_lc = tool_info.tool_name.to_lowercase();
         let qualified_name_lc = qualified_name.to_lowercase();
@@ -607,12 +616,12 @@ async fn route_query(
         }
 
         let schema = if include_schema {
-            let input = serialize_input_schema(tool_info.tool.input_schema.clone())?;
+            let input = serialize_input_schema(&tool_info.tool.input_schema)?;
             let output = tool_info
                 .tool
                 .output_schema
-                .clone()
-                .map(serialize_output_schema)
+                .as_ref()
+                .map(|schema| serialize_output_schema(schema.as_ref()))
                 .transpose()?;
             Some(McpToolSchema { input, output })
         } else {
@@ -1023,8 +1032,8 @@ impl ToolHandler for McpSearchHandler {
 
             let tool_name_lc = tool_info.tool_name.to_lowercase();
             let qualified_name_lc = qualified_name.to_lowercase();
-            let description = tool_info.tool.description.as_deref().unwrap_or("");
-            let description_lc = description.to_lowercase();
+            let description = tool_info.tool.description.as_deref().map(str::to_string);
+            let description_lc = description.as_deref().unwrap_or("").to_lowercase();
             let text_score = text_match_score(
                 &query_tokens,
                 &tool_name_lc,
@@ -1038,12 +1047,12 @@ impl ToolHandler for McpSearchHandler {
             }
 
             let schema = if args.include_schema {
-                let input = serialize_input_schema(tool_info.tool.input_schema.clone())?;
+                let input = serialize_input_schema(&tool_info.tool.input_schema)?;
                 let output = tool_info
                     .tool
                     .output_schema
-                    .clone()
-                    .map(serialize_output_schema)
+                    .as_ref()
+                    .map(|schema| serialize_output_schema(schema.as_ref()))
                     .transpose()?;
                 Some(McpToolSchema { input, output })
             } else {
@@ -1055,7 +1064,7 @@ impl ToolHandler for McpSearchHandler {
                 qualified_name,
                 tool_info.server_name,
                 tool_info.tool_name,
-                tool_info.tool.description,
+                description,
                 schema,
             ));
         }

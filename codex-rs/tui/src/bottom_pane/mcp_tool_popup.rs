@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use codex_common::fuzzy_match::fuzzy_match;
 use codex_core::mcp::split_qualified_tool_name;
-use mcp_types::Tool as McpTool;
+use codex_protocol::mcp::Tool as McpTool;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Constraint;
 use ratatui::layout::Layout;
@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
+use serde_json::Value as JsonValue;
 
 use crate::key_hint;
 use crate::render::Insets;
@@ -38,18 +39,28 @@ pub(crate) fn build_mcp_tool_items(tools: &HashMap<String, McpTool>) -> Vec<McpT
         };
         let display_name = format!("{server}::{tool_name}");
         let description = tool.title.clone().or_else(|| tool.description.clone());
-        let mut required_fields = tool.input_schema.required.clone().unwrap_or_default();
-        required_fields.sort();
-        let mut property_keys = tool
+        let mut required_fields = tool
             .input_schema
-            .properties
-            .as_ref()
-            .and_then(|value| value.as_object())
+            .get("required")
+            .and_then(JsonValue::as_array)
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(|field| field.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        required_fields.sort();
+        let properties: Option<&serde_json::Map<String, JsonValue>> = tool
+            .input_schema
+            .get("properties")
+            .and_then(JsonValue::as_object);
+        let mut property_keys = properties
             .map(|map| map.keys().cloned().collect::<Vec<_>>())
             .unwrap_or_default();
         property_keys.sort();
         items.push(McpToolItem {
-            qualified_name: qualified_name.clone(),
+            qualified_name: qualified_name.to_string(),
             display_name,
             description,
             required_fields,
