@@ -1649,7 +1649,7 @@ impl ChatWidget {
             developer_instructions: None,
         };
         let current_collaboration_mode = CollaborationMode {
-            mode: ModeKind::Custom,
+            mode: ModeKind::Default,
             settings: fallback_custom,
         };
         let active_cell = if model.is_none() {
@@ -1791,7 +1791,7 @@ impl ChatWidget {
             developer_instructions: None,
         };
         let current_collaboration_mode = CollaborationMode {
-            mode: ModeKind::Custom,
+            mode: ModeKind::Default,
             settings: fallback_custom,
         };
 
@@ -4004,7 +4004,7 @@ impl ChatWidget {
             self.bottom_pane.set_collaboration_modes_enabled(enabled);
             let settings = self.current_collaboration_mode.settings.clone();
             self.current_collaboration_mode = CollaborationMode {
-                mode: ModeKind::Custom,
+                mode: ModeKind::Default,
                 settings,
             };
             self.active_collaboration_mask = None;
@@ -4153,7 +4153,7 @@ impl ChatWidget {
         self.active_collaboration_mask
             .as_ref()
             .and_then(|mask| mask.mode)
-            .unwrap_or(ModeKind::Custom)
+            .unwrap_or(ModeKind::Default)
     }
 
     fn effective_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
@@ -4246,7 +4246,7 @@ impl ChatWidget {
         let queued_messages_empty = self.queued_user_messages.is_empty();
         let enabled = self.collaboration_modes_enabled();
         let from_cycle = self.collaboration_mask_from_cycle;
-        let is_code = self.active_mode_kind() == ModeKind::Code;
+        let is_code = self.active_mode_kind() == ModeKind::Default;
         let review_mode = self.is_review_mode;
         let rate_limit_prompt_pending = matches!(
             self.rate_limit_switch_prompt,

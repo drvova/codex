@@ -72,6 +72,13 @@ pub enum ContentItem {
     OutputText { text: String },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessagePhase {
+    Commentary,
+    FinalAnswer,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
@@ -85,6 +92,11 @@ pub enum ResponseItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         end_turn: Option<bool>,
+        // Optional output-message phase (for example: "commentary", "final_answer").
+        // Do not use directly; availability can vary by provider and model.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        phase: Option<MessagePhase>,
     },
     Reasoning {
         #[serde(default, skip_serializing)]
@@ -97,7 +109,7 @@ pub enum ResponseItem {
         encrypted_content: Option<String>,
     },
     LocalShellCall {
-        /// Set when using the chat completions API.
+        /// Legacy id field retained for compatibility with older payloads.
         #[serde(default, skip_serializing)]
         #[ts(skip)]
         id: Option<String>,
@@ -113,8 +125,7 @@ pub enum ResponseItem {
         name: String,
         // The Responses API returns the function call arguments as a *string* that contains
         // JSON, not as an already‑parsed object. We keep it as a raw string here and let
-        // Session::handle_function_call parse it into a Value. This exactly matches the
-        // Chat Completions + Responses API behavior.
+        // Session::handle_function_call parse it into a Value.
         arguments: String,
         call_id: String,
     },
@@ -439,6 +450,7 @@ impl From<DeveloperInstructions> for ResponseItem {
                 text: di.into_text(),
             }],
             end_turn: None,
+            phase: None,
         }
     }
 }
@@ -596,6 +608,7 @@ impl From<ResponseInputItem> for ResponseItem {
                 content,
                 id: None,
                 end_turn: None,
+                phase: None,
             },
             ResponseInputItem::FunctionCallOutput { call_id, output } => {
                 Self::FunctionCallOutput { call_id, output }
@@ -772,8 +785,7 @@ pub enum FunctionCallOutputContentItem {
 /// `content` preserves the historical plain-string payload so downstream
 /// integrations (tests, logging, etc.) can keep treating tool output as
 /// `String`. When an MCP server returns richer data we additionally populate
-/// `content_items` with the structured form that the Responses/Chat
-/// Completions APIs understand.
+/// `content_items` with the structured form that the Responses API understands.
 #[derive(Debug, Default, Clone, PartialEq, JsonSchema, TS)]
 pub struct FunctionCallOutputPayload {
     pub content: String,

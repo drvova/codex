@@ -100,18 +100,17 @@ impl Transport<RoleClient> for SseClientTransport {
             if let Some(token) = bearer_token.as_ref() {
                 request = request.bearer_auth(token);
             }
-            let response = request.json(&item).send().await.map_err(|err| {
-                io::Error::new(io::ErrorKind::Other, format!("SSE send error: {err}"))
-            })?;
+            let response = request
+                .json(&item)
+                .send()
+                .await
+                .map_err(|err| io::Error::other(format!("SSE send error: {err}")))?;
             if !response.status().is_success() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "SSE message POST to {} failed with status {}",
-                        message_url,
-                        response.status()
-                    ),
-                ));
+                return Err(io::Error::other(format!(
+                    "SSE message POST to {} failed with status {}",
+                    message_url,
+                    response.status()
+                )));
             }
             Ok(())
         }

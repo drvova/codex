@@ -3,9 +3,7 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 
 use crate::AuthManager;
 use crate::CodexAuth;
@@ -101,7 +99,6 @@ use uuid::Uuid;
 const MCP_SEARCH_TOOL_NAME: &str = "MCPSearch";
 
 use crate::ModelProviderInfo;
-use crate::WireApi;
 use crate::client::ModelClient;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -137,7 +134,6 @@ use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_paths;
 use crate::mentions::collect_tool_mentions_from_messages;
-use crate::model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
 use crate::project_doc::get_user_instructions;
 use crate::proposed_plan_parser::ProposedPlanParser;
 use crate::proposed_plan_parser::ProposedPlanSegment;
@@ -250,31 +246,6 @@ pub struct CodexSpawnOk {
 
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
 pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 64;
-static CHAT_WIRE_API_DEPRECATION_EMITTED: AtomicBool = AtomicBool::new(false);
-
-fn maybe_push_chat_wire_api_deprecation(
-    config: &Config,
-    post_session_configured_events: &mut Vec<Event>,
-) {
-    if config.model_provider.wire_api != WireApi::Chat {
-        return;
-    }
-
-    if CHAT_WIRE_API_DEPRECATION_EMITTED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return;
-    }
-
-    post_session_configured_events.push(Event {
-        id: INITIAL_SUBMIT_ID.to_owned(),
-        msg: EventMsg::DeprecationNotice(DeprecationNoticeEvent {
-            summary: CHAT_WIRE_API_DEPRECATION_SUMMARY.to_string(),
-            details: None,
-        }),
-    });
-}
 
 impl Codex {
     /// Spawn a new [`Codex`] and initialize the session.
@@ -377,7 +348,7 @@ impl Codex {
         // TODO (aibrahim): Consolidate config.model and config.model_reasoning_effort into config.collaboration_mode
         // to avoid extracting these fields separately and constructing CollaborationMode here.
         let collaboration_mode = CollaborationMode {
-            mode: ModeKind::Custom,
+            mode: ModeKind::Default,
             settings: Settings {
                 model: model.clone(),
                 reasoning_effort: config.model_reasoning_effort,
@@ -930,7 +901,6 @@ impl Session {
                 }),
             });
         }
-        maybe_push_chat_wire_api_deprecation(&config, &mut post_session_configured_events);
         maybe_push_unstable_features_warning(&config, &mut post_session_configured_events);
 
         let auth = auth.as_ref();
@@ -1114,6 +1084,11 @@ impl Session {
     async fn get_total_token_usage(&self) -> i64 {
         let state = self.state.lock().await;
         state.get_total_token_usage(state.server_reasoning_included())
+    }
+
+    async fn get_estimated_token_count(&self, turn_context: &TurnContext) -> Option<i64> {
+        let state = self.state.lock().await;
+        state.history.estimate_token_count(turn_context)
     }
 
     pub(crate) async fn get_base_instructions(&self) -> BaseInstructions {
@@ -1925,6 +1900,7 @@ impl Session {
                 text: format!("Warning: {}", message.into()),
             }],
             end_turn: None,
+            phase: None,
         };
 
         self.record_conversation_items(ctx, &[item]).await;
@@ -2831,7 +2807,7 @@ mod handlers {
             } => {
                 let collaboration_mode = collaboration_mode.or_else(|| {
                     Some(CollaborationMode {
-                        mode: ModeKind::Custom,
+                        mode: ModeKind::Default,
                         settings: Settings {
                             model: model.clone(),
                             reasoning_effort: effort,
@@ -3568,6 +3544,7 @@ pub(crate) async fn run_turn(
     let model_info = turn_context.client.get_model_info();
     let auto_compact_limit = model_info.auto_compact_token_limit().unwrap_or(i64::MAX);
     let total_usage_tokens = sess.get_total_token_usage().await;
+
     let event = EventMsg::TurnStarted(TurnStartedEvent {
         model_context_window: turn_context.client.get_model_context_window(),
         collaboration_mode_kind: turn_context.collaboration_mode.mode,
@@ -3753,6 +3730,19 @@ pub(crate) async fn run_turn(
                 } = sampling_request_output;
                 let total_usage_tokens = sess.get_total_token_usage().await;
                 let token_limit_reached = total_usage_tokens >= auto_compact_limit;
+
+                let estimated_token_count =
+                    sess.get_estimated_token_count(turn_context.as_ref()).await;
+
+                info!(
+                    turn_id = %turn_context.sub_id,
+                    total_usage_tokens,
+                    estimated_token_count = ?estimated_token_count,
+                    auto_compact_limit,
+                    token_limit_reached,
+                    needs_follow_up,
+                    "post sampling token usage"
+                );
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if token_limit_reached && needs_follow_up {
@@ -5265,6 +5255,7 @@ mod tests {
                 text: text.to_string(),
             }],
             end_turn: None,
+            phase: None,
         }
     }
 
@@ -5549,6 +5540,7 @@ mod tests {
                     text: "turn 1 user".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -5557,6 +5549,7 @@ mod tests {
                     text: "turn 1 assistant".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
         ];
         sess.record_into_history(&turn_1, tc.as_ref()).await;
@@ -5569,6 +5562,7 @@ mod tests {
                     text: "turn 2 user".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -5577,6 +5571,7 @@ mod tests {
                     text: "turn 2 assistant".to_string(),
                 }],
                 end_turn: None,
+                phase: None,
             },
         ];
         sess.record_into_history(&turn_2, tc.as_ref()).await;
@@ -5609,6 +5604,7 @@ mod tests {
                 text: "turn 1 user".to_string(),
             }],
             end_turn: None,
+            phase: None,
         }];
         sess.record_into_history(&turn_1, tc.as_ref()).await;
 
@@ -5672,7 +5668,7 @@ mod tests {
         let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
         let reasoning_effort = config.model_reasoning_effort;
         let collaboration_mode = CollaborationMode {
-            mode: ModeKind::Custom,
+            mode: ModeKind::Default,
             settings: Settings {
                 model,
                 reasoning_effort,
@@ -5757,7 +5753,7 @@ mod tests {
         let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
         let reasoning_effort = config.model_reasoning_effort;
         let collaboration_mode = CollaborationMode {
-            mode: ModeKind::Custom,
+            mode: ModeKind::Default,
             settings: Settings {
                 model,
                 reasoning_effort,
@@ -6029,7 +6025,7 @@ mod tests {
         let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
         let reasoning_effort = config.model_reasoning_effort;
         let collaboration_mode = CollaborationMode {
-            mode: ModeKind::Custom,
+            mode: ModeKind::Default,
             settings: Settings {
                 model,
                 reasoning_effort,
@@ -6151,7 +6147,7 @@ mod tests {
         let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
         let reasoning_effort = config.model_reasoning_effort;
         let collaboration_mode = CollaborationMode {
-            mode: ModeKind::Custom,
+            mode: ModeKind::Default,
             settings: Settings {
                 model,
                 reasoning_effort,
@@ -6566,6 +6562,7 @@ mod tests {
                 text: "first user".to_string(),
             }],
             end_turn: None,
+            phase: None,
         };
         live_history.record_items(std::iter::once(&user1), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user1.clone()));
@@ -6577,6 +6574,7 @@ mod tests {
                 text: "assistant reply one".to_string(),
             }],
             end_turn: None,
+            phase: None,
         };
         live_history.record_items(std::iter::once(&assistant1), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant1.clone()));
@@ -6602,6 +6600,7 @@ mod tests {
                 text: "second user".to_string(),
             }],
             end_turn: None,
+            phase: None,
         };
         live_history.record_items(std::iter::once(&user2), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user2.clone()));
@@ -6613,6 +6612,7 @@ mod tests {
                 text: "assistant reply two".to_string(),
             }],
             end_turn: None,
+            phase: None,
         };
         live_history.record_items(std::iter::once(&assistant2), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant2.clone()));
@@ -6638,6 +6638,7 @@ mod tests {
                 text: "third user".to_string(),
             }],
             end_turn: None,
+            phase: None,
         };
         live_history.record_items(std::iter::once(&user3), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(user3));
@@ -6649,6 +6650,7 @@ mod tests {
                 text: "assistant reply three".to_string(),
             }],
             end_turn: None,
+            phase: None,
         };
         live_history.record_items(std::iter::once(&assistant3), turn_context.truncation_policy);
         rollout_items.push(RolloutItem::ResponseItem(assistant3));

@@ -75,7 +75,9 @@ pub(crate) struct FooterProps {
 pub(crate) enum CollaborationModeIndicator {
     Code,
     Plan,
+    #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
     PairProgramming,
+    #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
     Execute,
 }
 

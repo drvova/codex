@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
 
-use crate::WireApi;
 use crate::client_common::Prompt;
 use crate::codex::Session;
 use crate::codex::TurnContext;
@@ -95,6 +94,7 @@ async fn generate_and_emit_prompt_suggestion(
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText { text: truncated }],
             end_turn: None,
+            phase: None,
         }]
     };
     input.push(ResponseItem::Message {
@@ -104,12 +104,10 @@ async fn generate_and_emit_prompt_suggestion(
             text: PROMPT_SUGGESTION_USER_MESSAGE.to_string(),
         }],
         end_turn: None,
+        phase: None,
     });
 
-    let output_schema = match turn_context.client.get_provider().wire_api {
-        WireApi::Chat => None,
-        WireApi::Responses => Some(prompt_suggestion_schema()),
-    };
+    let output_schema = Some(prompt_suggestion_schema());
 
     let prompt = Prompt {
         input,

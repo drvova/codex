@@ -37,7 +37,7 @@ fn collab_mode_with_mode_and_instructions(
 }
 
 fn collab_mode_with_instructions(instructions: Option<&str>) -> CollaborationMode {
-    collab_mode_with_mode_and_instructions(ModeKind::Custom, instructions)
+    collab_mode_with_mode_and_instructions(ModeKind::Default, instructions)
 }
 
 fn developer_texts(input: &[Value]) -> Vec<String> {
@@ -466,7 +466,7 @@ async fn collaboration_mode_update_emits_new_instruction_message_when_mode_chang
     let req2 = mount_sse_once(&server, sse_completed("resp-2")).await;
 
     let test = test_codex().build(&server).await?;
-    let code_text = "code mode instructions";
+    let default_text = "default mode instructions";
     let plan_text = "plan mode instructions";
 
     test.codex
@@ -483,8 +483,8 @@ async fn collaboration_mode_update_emits_new_instruction_message_when_mode_chang
             max_output_tokens: None,
             history_depth: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
-                ModeKind::Code,
-                Some(code_text),
+                ModeKind::Default,
+                Some(default_text),
             )),
             personality: None,
             disallowed_tools: None,
@@ -537,9 +537,9 @@ async fn collaboration_mode_update_emits_new_instruction_message_when_mode_chang
 
     let input = req2.single_request().input();
     let dev_texts = developer_texts(&input);
-    let code_text = collab_xml(code_text);
+    let default_text = collab_xml(default_text);
     let plan_text = collab_xml(plan_text);
-    assert_eq!(count_exact(&dev_texts, &code_text), 1);
+    assert_eq!(count_exact(&dev_texts, &default_text), 1);
     assert_eq!(count_exact(&dev_texts, &plan_text), 1);
 
     Ok(())
@@ -570,7 +570,7 @@ async fn collaboration_mode_update_noop_does_not_append_when_mode_is_unchanged()
             max_output_tokens: None,
             history_depth: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
-                ModeKind::Code,
+                ModeKind::Default,
                 Some(collab_text),
             )),
             personality: None,
@@ -603,7 +603,7 @@ async fn collaboration_mode_update_noop_does_not_append_when_mode_is_unchanged()
             max_output_tokens: None,
             history_depth: None,
             collaboration_mode: Some(collab_mode_with_mode_and_instructions(
-                ModeKind::Code,
+                ModeKind::Default,
                 Some(collab_text),
             )),
             personality: None,

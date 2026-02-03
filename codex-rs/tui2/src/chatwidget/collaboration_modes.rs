@@ -3,7 +3,7 @@ use codex_protocol::config_types::CollaborationModeMask;
 use codex_protocol::config_types::ModeKind;
 
 fn is_tui_mode(kind: ModeKind) -> bool {
-    matches!(kind, ModeKind::Plan | ModeKind::Code)
+    matches!(kind, ModeKind::Plan | ModeKind::Default)
 }
 
 fn filtered_presets(models_manager: &ModelsManager) -> Vec<CollaborationModeMask> {
@@ -22,7 +22,7 @@ pub(crate) fn default_mask(models_manager: &ModelsManager) -> Option<Collaborati
     let presets = filtered_presets(models_manager);
     presets
         .iter()
-        .find(|mask| mask.mode == Some(ModeKind::Code))
+        .find(|mask| mask.mode == Some(ModeKind::Default))
         .cloned()
         .or_else(|| presets.into_iter().next())
 }
@@ -57,5 +57,5 @@ pub(crate) fn next_mask(
 }
 
 pub(crate) fn code_mask(models_manager: &ModelsManager) -> Option<CollaborationModeMask> {
-    mask_for_kind(models_manager, ModeKind::Code)
+    mask_for_kind(models_manager, ModeKind::Default)
 }

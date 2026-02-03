@@ -62,6 +62,7 @@ use codex_protocol::account::PlanType;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
+use codex_protocol::openai_models::default_input_modalities;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::parse_command::ParsedCommand;
@@ -480,7 +481,7 @@ async fn make_chatwidget_manual(
         .and_then(|mask| mask.model.clone())
         .unwrap_or_else(|| resolved_model.clone());
     let current_collaboration_mode = CollaborationMode {
-        mode: ModeKind::Custom,
+        mode: ModeKind::Default,
         settings: Settings {
             model: header_model.clone(),
             reasoning_effort: None,
@@ -1929,10 +1930,12 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
             effort: ReasoningEffortConfig::Medium,
             description: "medium".to_string(),
         }],
+        supports_personality: false,
         is_default: false,
         upgrade: None,
         show_in_picker,
         supported_in_api: true,
+        input_modalities: default_input_modalities(),
     };
 
     chat.open_model_popup_with_presets(vec![
@@ -2141,10 +2144,12 @@ async fn single_reasoning_option_skips_selection() {
         description: "".to_string(),
         default_reasoning_effort: ReasoningEffortConfig::High,
         supported_reasoning_efforts: single_effort,
+        supports_personality: false,
         is_default: false,
         upgrade: None,
         show_in_picker: true,
         supported_in_api: true,
+        input_modalities: default_input_modalities(),
     };
     chat.open_reasoning_popup(preset);
 
@@ -3607,7 +3612,7 @@ async fn collab_mode_cycle_auto_switches_to_plan_after_code_turn() {
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.on_task_complete(Some("Done".to_string()), false);
 
@@ -3621,12 +3626,12 @@ async fn collab_mode_cycle_auto_switch_blocks_with_composer_text() {
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.bottom_pane
         .set_composer_text("draft".to_string());
     chat.on_task_complete(Some("Done".to_string()), false);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.bottom_pane.set_composer_text(String::new());
     chat.on_task_complete(Some("Done".to_string()), false);
@@ -3640,11 +3645,11 @@ async fn collab_mode_cycle_auto_switch_blocks_with_popup_active() {
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.open_review_popup();
     chat.on_task_complete(Some("Done".to_string()), false);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     chat.on_task_complete(Some("Done".to_string()), false);
@@ -3660,7 +3665,7 @@ async fn collab_mode_cycle_auto_switch_blocks_with_rate_limit_prompt_pending() {
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.on_rate_limit_snapshot(Some(snapshot(90.0)));
     assert!(matches!(
@@ -3669,7 +3674,7 @@ async fn collab_mode_cycle_auto_switch_blocks_with_rate_limit_prompt_pending() {
     ));
 
     chat.on_task_complete(Some("Done".to_string()), false);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 }
 
 #[tokio::test]
@@ -3680,11 +3685,11 @@ async fn collab_mode_explicit_selection_does_not_auto_switch() {
         .expect("expected code collaboration mode");
 
     chat.set_collaboration_mask(code_mask);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.on_task_complete(Some("Done".to_string()), false);
 
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 }
 
 #[tokio::test]
@@ -3695,13 +3700,13 @@ async fn collab_mode_cycle_auto_switch_defers_until_queue_empty() {
 
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
     chat.handle_key_event(KeyEvent::from(KeyCode::BackTab));
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.bottom_pane.set_task_running(true);
     chat.queue_user_message("Queued message".to_string().into());
 
     chat.on_task_complete(Some("Done".to_string()), false);
-    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Code);
+    assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Default);
 
     chat.on_task_complete(Some("Done".to_string()), false);
     assert_eq!(chat.active_collaboration_mode_kind(), ModeKind::Plan);
