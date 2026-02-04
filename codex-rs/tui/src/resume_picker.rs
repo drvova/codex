@@ -1200,6 +1200,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::Mutex;
+    use tokio::sync::broadcast;
+    use tokio::time::timeout;
 
     fn head_with_ts_and_user_text(ts: &str, texts: &[&str]) -> Vec<serde_json::Value> {
         vec![
@@ -1241,6 +1243,48 @@ mod tests {
             num_scanned_files,
             reached_scan_cap,
         }
+    }
+
+    #[tokio::test]
+    async fn page_loaded_requests_frame() {
+        let (draw_tx, mut draw_rx) = broadcast::channel(8);
+        let requester = FrameRequester::new(draw_tx);
+        let loader: PageLoader = Arc::new(|_| {});
+
+        let mut state = PickerState::new(
+            PathBuf::from("/tmp"),
+            requester,
+            loader,
+            String::from("openai"),
+            true,
+            None,
+            SessionPickerAction::Resume,
+        );
+
+        let request_token = state.allocate_request_token();
+        state.pagination.loading = LoadingState::Pending(PendingLoad {
+            request_token,
+            search_token: None,
+        });
+
+        while draw_rx.try_recv().is_ok() {}
+
+        state
+            .handle_background_event(BackgroundEvent::PageLoaded {
+                request_token,
+                search_token: None,
+                page: Ok(page(
+                    vec![make_item("/tmp/a.jsonl", "2025-01-01T00:00:00Z", "one")],
+                    None,
+                    1,
+                    false,
+                )),
+            })
+            .await
+            .unwrap();
+
+        let draw = timeout(std::time::Duration::from_millis(200), draw_rx.recv()).await;
+        assert!(draw.is_ok(), "expected a frame request after page load");
     }
 
     #[test]
