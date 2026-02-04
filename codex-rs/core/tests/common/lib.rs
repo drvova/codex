@@ -10,7 +10,10 @@ use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use regex_lite::Regex;
+use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::OnceLock;
 
 pub mod process;
 pub mod responses;
@@ -99,12 +102,98 @@ pub async fn load_default_config_for_test(codex_home: &TempDir) -> Config {
 #[cfg(target_os = "linux")]
 fn default_test_overrides() -> ConfigOverrides {
     ConfigOverrides {
-        codex_linux_sandbox_exe: Some(
-            codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
-                .expect("should find binary for codex-linux-sandbox"),
-        ),
+        codex_linux_sandbox_exe: Some(resolve_codex_linux_sandbox_exe()),
         ..ConfigOverrides::default()
     }
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_codex_linux_sandbox_exe() -> PathBuf {
+    static SANDBOX_EXE: OnceLock<PathBuf> = OnceLock::new();
+    SANDBOX_EXE
+        .get_or_init(
+            || match codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox") {
+                Ok(path) => path,
+                Err(err) => {
+                    build_codex_linux_sandbox().unwrap_or_else(|build_err| {
+                        panic!(
+                            "failed to build codex-linux-sandbox: {build_err}; lookup error: {err}"
+                        );
+                    });
+                    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox").unwrap_or_else(|err| {
+                        panic!("should find binary for codex-linux-sandbox after build: {err}");
+                    })
+                }
+            },
+        )
+        .clone()
+}
+
+#[cfg(target_os = "linux")]
+fn build_codex_linux_sandbox() -> Result<(), String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut cmd = Command::new(cargo);
+    if let Some(root) = cargo_workspace_root() {
+        cmd.current_dir(root);
+    }
+    let status = cmd
+        .args([
+            "build",
+            "-p",
+            "codex-linux-sandbox",
+            "--bin",
+            "codex-linux-sandbox",
+        ])
+        .status()
+        .map_err(|err| format!("failed to spawn cargo build: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("cargo build exited with {status}"))
+    }
+}
+
+fn build_test_stdio_server() -> Result<(), String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut cmd = Command::new(cargo);
+    if let Some(root) = cargo_workspace_root() {
+        cmd.current_dir(root);
+    }
+    let status = cmd
+        .args([
+            "build",
+            "-p",
+            "codex-rmcp-client",
+            "--bin",
+            "test_stdio_server",
+        ])
+        .status()
+        .map_err(|err| format!("failed to spawn cargo build: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("cargo build exited with {status}"))
+    }
+}
+
+fn cargo_workspace_root() -> Option<PathBuf> {
+    if let Ok(root) = codex_utils_cargo_bin::repo_root() {
+        if root.join("Cargo.toml").exists() {
+            return Some(root);
+        }
+        let nested = root.join("codex-rs");
+        if nested.join("Cargo.toml").exists() {
+            return Some(nested);
+        }
+    }
+
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let parent = manifest_dir.parent()?;
+    if parent.join("Cargo.toml").exists() {
+        return Some(parent.to_path_buf());
+    }
+
+    None
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -260,7 +349,24 @@ pub fn format_with_current_shell_display_non_login(command: &str) -> String {
 }
 
 pub fn stdio_server_bin() -> Result<String, CargoBinError> {
-    codex_utils_cargo_bin::cargo_bin("test_stdio_server").map(|p| p.to_string_lossy().to_string())
+    static STDIO_SERVER: OnceLock<PathBuf> = OnceLock::new();
+    let path =
+        STDIO_SERVER.get_or_init(
+            || match codex_utils_cargo_bin::cargo_bin("test_stdio_server") {
+                Ok(path) => path,
+                Err(err) => {
+                    build_test_stdio_server().unwrap_or_else(|build_err| {
+                        panic!(
+                            "failed to build test_stdio_server: {build_err}; lookup error: {err}"
+                        );
+                    });
+                    codex_utils_cargo_bin::cargo_bin("test_stdio_server").unwrap_or_else(|err| {
+                        panic!("should find binary for test_stdio_server after build: {err}");
+                    })
+                }
+            },
+        );
+    Ok(path.to_string_lossy().to_string())
 }
 
 pub mod fs_wait {
