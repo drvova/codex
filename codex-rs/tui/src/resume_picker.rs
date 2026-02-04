@@ -498,6 +498,7 @@ impl PickerState {
                 self.update_thread_names().await;
                 let completed_token = pending.search_token.or(search_token);
                 self.continue_search_if_token_matches(completed_token);
+                self.request_frame();
             }
         }
         Ok(())
