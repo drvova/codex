@@ -99,12 +99,14 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use toml::Value as TomlValue;
-use toml_edit::Array as TomlArray;
-use toml_edit::Item as TomlItem;
 
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
-const MCP_SEARCH_TOOL_NAME: &str = "MCPSearch";
+/// Baseline cadence for periodic stream commit animation ticks.
+///
+/// Smooth-mode streaming drains one line per tick, so this interval controls
+/// perceived typing speed for non-backlogged output.
+const COMMIT_ANIMATION_TICK: Duration = tui::TARGET_FRAME_INTERVAL;
 
 #[derive(Debug, Clone)]
 pub struct AppExitInfo {
@@ -1234,8 +1236,6 @@ impl App {
                     self.chat_widget.handle_paste(pasted);
                 }
                 TuiEvent::Draw => {
-                    self.chat_widget
-                        .update_terminal_size(tui.terminal.last_known_screen_size);
                     if self.backtrack_render_pending {
                         self.backtrack_render_pending = false;
                         self.render_transcript_once(tui);
@@ -1490,7 +1490,7 @@ impl App {
                     let running = self.commit_anim_running.clone();
                     thread::spawn(move || {
                         while running.load(Ordering::Relaxed) {
-                            thread::sleep(Duration::from_millis(50));
+                            thread::sleep(COMMIT_ANIMATION_TICK);
                             tx.send(AppEvent::CommitTick);
                         }
                     });
@@ -1533,33 +1533,6 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
-            AppEvent::SubmitPromptSuggestion(text) => {
-                self.chat_widget.submit_prompt_suggestion(text);
-            }
-            AppEvent::PrefillPromptSuggestion(text) => {
-                self.chat_widget.prefill_prompt_suggestion(text);
-            }
-            AppEvent::UpdatePromptSuggestionHistoryDepth(history_depth) => {
-                self.chat_widget
-                    .set_prompt_suggestion_history_depth(history_depth);
-                self.chat_widget.submit_op(Op::OverrideTurnContext {
-                    cwd: None,
-                    approval_policy: None,
-                    sandbox_policy: None,
-                    windows_sandbox_level: None,
-                    model: None,
-                    subagent_model: None,
-                    subagent_effort: None,
-                    effort: None,
-                    summary: None,
-                    max_output_tokens: None,
-                    history_depth: Some(history_depth.unwrap_or(0)),
-                    collaboration_mode: None,
-                    personality: None,
-                    disallowed_tools: None,
-                    terminal_size: None,
-                });
-            }
             AppEvent::OpenAppLink {
                 title,
                 description,
@@ -1581,9 +1554,6 @@ impl App {
             AppEvent::FileSearchResult { query, matches } => {
                 self.chat_widget.apply_file_search_result(query, matches);
             }
-            AppEvent::RequestMcpToolsForPopup => {
-                self.chat_widget.request_mcp_tools(false);
-            }
             AppEvent::RateLimitSnapshotFetched(snapshot) => {
                 self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
             }
@@ -1596,103 +1566,6 @@ impl App {
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
             }
-            AppEvent::UpdateSubagentModel { model } => {
-                let model = model.and_then(|value| {
-                    let trimmed = value.trim();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed.to_string())
-                    }
-                });
-                self.config.subagent_model = model.clone();
-                self.chat_widget.set_subagent_model(model.clone());
-
-                self.chat_widget.submit_op(Op::OverrideTurnContext {
-                    cwd: None,
-                    approval_policy: None,
-                    sandbox_policy: None,
-                    windows_sandbox_level: None,
-                    model: None,
-                    subagent_model: Some(model.clone()),
-                    subagent_effort: None,
-                    effort: None,
-                    summary: None,
-                    max_output_tokens: None,
-                    history_depth: None,
-                    collaboration_mode: None,
-                    personality: None,
-                    disallowed_tools: None,
-                    terminal_size: None,
-                });
-
-                let edit = if let Some(value) = model {
-                    ConfigEdit::SetPath {
-                        segments: vec!["agents".to_string(), "subagent_model".to_string()],
-                        value: TomlItem::Value(value.into()),
-                    }
-                } else {
-                    ConfigEdit::ClearPath {
-                        segments: vec!["agents".to_string(), "subagent_model".to_string()],
-                    }
-                };
-                let builder = ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_profile(self.active_profile.as_deref())
-                    .with_edits(vec![edit]);
-                if let Err(err) = builder.apply().await {
-                    tracing::error!(error = %err, "failed to persist subagent model");
-                    self.chat_widget
-                        .add_error_message(format!("Failed to update subagent model: {err}"));
-                }
-            }
-            AppEvent::UpdateSubagentReasoningEffort(effort) => {
-                self.config.subagent_reasoning_effort = effort;
-                self.chat_widget.set_subagent_reasoning_effort(effort);
-
-                self.chat_widget.submit_op(Op::OverrideTurnContext {
-                    cwd: None,
-                    approval_policy: None,
-                    sandbox_policy: None,
-                    windows_sandbox_level: None,
-                    model: None,
-                    subagent_model: None,
-                    subagent_effort: Some(effort),
-                    effort: None,
-                    summary: None,
-                    max_output_tokens: None,
-                    history_depth: None,
-                    collaboration_mode: None,
-                    personality: None,
-                    disallowed_tools: None,
-                    terminal_size: None,
-                });
-
-                let edit = if let Some(value) = effort {
-                    ConfigEdit::SetPath {
-                        segments: vec![
-                            "agents".to_string(),
-                            "subagent_reasoning_effort".to_string(),
-                        ],
-                        value: TomlItem::Value(value.to_string().into()),
-                    }
-                } else {
-                    ConfigEdit::ClearPath {
-                        segments: vec![
-                            "agents".to_string(),
-                            "subagent_reasoning_effort".to_string(),
-                        ],
-                    }
-                };
-                let builder = ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_profile(self.active_profile.as_deref())
-                    .with_edits(vec![edit]);
-                if let Err(err) = builder.apply().await {
-                    tracing::error!(error = %err, "failed to persist subagent reasoning effort");
-                    self.chat_widget.add_error_message(format!(
-                        "Failed to update subagent reasoning effort: {err}"
-                    ));
-                }
-            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
             }
@@ -1702,18 +1575,8 @@ impl App {
             AppEvent::OpenReasoningPopup { model } => {
                 self.chat_widget.open_reasoning_popup(model);
             }
-            AppEvent::OpenSubagentReasoningPopup {
-                preset,
-                model_override,
-            } => {
-                self.chat_widget
-                    .open_subagent_reasoning_popup(preset, model_override);
-            }
             AppEvent::OpenAllModelsPopup { models } => {
                 self.chat_widget.open_all_models_popup(models);
-            }
-            AppEvent::OpenSubagentModelPrompt { initial } => {
-                self.chat_widget.open_subagent_model_prompt(initial);
             }
             AppEvent::OpenFullAccessConfirmation {
                 preset,
@@ -1909,7 +1772,6 @@ impl App {
                                         summary: None,
                                         collaboration_mode: None,
                                         personality: None,
-                                        terminal_size: None,
                                     },
                                 ));
                                 self.app_event_tx.send(
@@ -1928,16 +1790,10 @@ impl App {
                                         sandbox_policy: Some(preset.sandbox.clone()),
                                         windows_sandbox_level: Some(windows_sandbox_level),
                                         model: None,
-                                        subagent_model: None,
-                                        subagent_effort: None,
                                         effort: None,
                                         summary: None,
-                                        max_output_tokens: None,
-                                        history_depth: None,
                                         collaboration_mode: None,
                                         personality: None,
-                                        disallowed_tools: None,
-                                        terminal_size: None,
                                     },
                                 ));
                                 self.app_event_tx
@@ -2165,7 +2021,6 @@ impl App {
                                 summary: None,
                                 collaboration_mode: None,
                                 personality: None,
-                                terminal_size: None,
                             }));
                     }
                 }
@@ -2174,62 +2029,6 @@ impl App {
                     self.chat_widget.add_error_message(format!(
                         "Failed to update experimental features: {err}"
                     ));
-                }
-            }
-            AppEvent::UpdateMcpSearchEnabled { enabled } => {
-                let mut disallowed_tools = self.config.disallowed_tools.clone();
-                if enabled {
-                    disallowed_tools.retain(|tool| tool != MCP_SEARCH_TOOL_NAME);
-                } else if !disallowed_tools
-                    .iter()
-                    .any(|tool| tool == MCP_SEARCH_TOOL_NAME)
-                {
-                    disallowed_tools.push(MCP_SEARCH_TOOL_NAME.to_string());
-                }
-                self.config.disallowed_tools = disallowed_tools.clone();
-                self.chat_widget.set_mcp_search_enabled(enabled);
-
-                self.chat_widget.submit_op(Op::OverrideTurnContext {
-                    cwd: None,
-                    approval_policy: None,
-                    sandbox_policy: None,
-                    windows_sandbox_level: None,
-                    model: None,
-                    subagent_model: None,
-                    subagent_effort: None,
-                    effort: None,
-                    summary: None,
-                    max_output_tokens: None,
-                    history_depth: None,
-                    collaboration_mode: None,
-                    personality: None,
-                    disallowed_tools: Some(disallowed_tools.clone()),
-                    terminal_size: None,
-                });
-
-                let mut edits = Vec::new();
-                if disallowed_tools.is_empty() {
-                    edits.push(ConfigEdit::ClearPath {
-                        segments: vec!["tools".to_string(), "disallowed_tools".to_string()],
-                    });
-                } else {
-                    let mut array = TomlArray::new();
-                    for tool in &disallowed_tools {
-                        array.push(tool.clone());
-                    }
-                    edits.push(ConfigEdit::SetPath {
-                        segments: vec!["tools".to_string(), "disallowed_tools".to_string()],
-                        value: TomlItem::Value(array.into()),
-                    });
-                }
-
-                let builder = ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_profile(self.active_profile.as_deref())
-                    .with_edits(edits);
-                if let Err(err) = builder.apply().await {
-                    tracing::error!(error = %err, "failed to persist MCPSearch setting");
-                    self.chat_widget
-                        .add_error_message(format!("Failed to update MCPSearch setting: {err}"));
                 }
             }
             AppEvent::SkipNextWorldWritableScan => {

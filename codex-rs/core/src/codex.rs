@@ -34,6 +34,7 @@ use crate::stream_events_utils::last_assistant_message_from_item;
 use crate::terminal;
 use crate::transport_manager::TransportManager;
 use crate::truncate::TruncationPolicy;
+use crate::turn_metadata::build_turn_metadata_header;
 use crate::user_notification::UserNotifier;
 use crate::util::error_or_panic;
 use async_channel::Receiver;
@@ -52,7 +53,6 @@ use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::format_allow_prefixes;
 use codex_protocol::openai_models::ModelInfo;
-use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -62,7 +62,6 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::TerminalSize;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -79,10 +78,10 @@ use rmcp::model::PaginatedRequestParam;
 use rmcp::model::ReadResourceRequestParam;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
-use rmcp::model::Tool as McpTool;
 use serde_json;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio::sync::OnceCell;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
@@ -93,11 +92,9 @@ use tracing::field;
 use tracing::info;
 use tracing::info_span;
 use tracing::instrument;
+use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
-use uuid::Uuid;
-
-const MCP_SEARCH_TOOL_NAME: &str = "MCPSearch";
 
 use crate::ModelProviderInfo;
 use crate::client::ModelClient;
@@ -124,10 +121,8 @@ use crate::feedback_tags;
 use crate::git_info::get_git_repo_root;
 use crate::instructions::UserInstructions;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
-use crate::mcp::ExplicitMcpToolCall;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp::effective_mcp_servers;
-use crate::mcp::extract_explicit_mcp_tool_calls;
 use crate::mcp::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp::with_codex_apps_mcp;
 use crate::mcp_connection_manager::McpConnectionManager;
@@ -360,9 +355,6 @@ impl Codex {
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
-            max_output_tokens: None,
-            history_depth: None,
-            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
             personality: config.personality,
@@ -508,13 +500,11 @@ pub(crate) struct TurnContext {
     pub(crate) tools_config: ToolsConfig,
     pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
-    pub(crate) max_output_tokens: Option<u32>,
-    pub(crate) history_depth: Option<u32>,
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) truncation_policy: TruncationPolicy,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
-    pub(crate) terminal_size: Option<TerminalSize>,
+    turn_metadata_header: OnceCell<Option<String>>,
 }
 impl TurnContext {
     pub(crate) fn resolve_path(&self, path: Option<String>) -> PathBuf {
@@ -528,6 +518,38 @@ impl TurnContext {
             .as_deref()
             .unwrap_or(compact::SUMMARIZATION_PROMPT)
     }
+
+    async fn build_turn_metadata_header(&self) -> Option<String> {
+        self.turn_metadata_header
+            .get_or_init(|| async { build_turn_metadata_header(self.cwd.as_path()).await })
+            .await
+            .clone()
+    }
+
+    pub async fn resolve_turn_metadata_header(&self) -> Option<String> {
+        const TURN_METADATA_HEADER_TIMEOUT_MS: u64 = 250;
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(TURN_METADATA_HEADER_TIMEOUT_MS),
+            self.build_turn_metadata_header(),
+        )
+        .await
+        {
+            Ok(header) => header,
+            Err(_) => {
+                warn!("timed out after 250ms while building turn metadata header");
+                self.turn_metadata_header.get().cloned().flatten()
+            }
+        }
+    }
+
+    pub fn spawn_turn_metadata_header_task(self: &Arc<Self>) {
+        let context = Arc::clone(self);
+        tokio::spawn(async move {
+            trace!("Spawning turn metadata calculation task");
+            context.build_turn_metadata_header().await;
+            trace!("Turn metadata calculation task completed");
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -537,9 +559,6 @@ pub(crate) struct SessionConfiguration {
 
     collaboration_mode: CollaborationMode,
     model_reasoning_summary: ReasoningSummaryConfig,
-    max_output_tokens: Option<u32>,
-    history_depth: Option<u32>,
-    terminal_size: Option<TerminalSize>,
 
     /// Developer instructions that supplement the base instructions.
     developer_instructions: Option<String>,
@@ -583,10 +602,6 @@ pub(crate) struct SessionConfiguration {
 }
 
 impl SessionConfiguration {
-    fn normalize_history_depth(history_depth: u32) -> Option<u32> {
-        (history_depth > 0).then_some(history_depth)
-    }
-
     pub(crate) fn codex_home(&self) -> &PathBuf {
         &self.codex_home
     }
@@ -627,30 +642,6 @@ impl SessionConfiguration {
         if let Some(cwd) = updates.cwd.clone() {
             next_configuration.cwd = cwd;
         }
-        if let Some(max_output_tokens) = updates.max_output_tokens {
-            next_configuration.max_output_tokens = Some(max_output_tokens);
-        }
-        if let Some(history_depth) = updates.history_depth {
-            next_configuration.history_depth = Self::normalize_history_depth(history_depth);
-        }
-        if let Some(terminal_size) = updates.terminal_size {
-            next_configuration.terminal_size = Some(terminal_size);
-        }
-        if let Some(disallowed_tools) = updates.disallowed_tools.clone() {
-            let mut updated_config = (*next_configuration.original_config_do_not_use).clone();
-            updated_config.disallowed_tools = disallowed_tools;
-            next_configuration.original_config_do_not_use = Arc::new(updated_config);
-        }
-        if let Some(subagent_model) = updates.subagent_model.clone() {
-            let mut updated_config = (*next_configuration.original_config_do_not_use).clone();
-            updated_config.subagent_model = subagent_model;
-            next_configuration.original_config_do_not_use = Arc::new(updated_config);
-        }
-        if let Some(subagent_effort) = updates.subagent_effort {
-            let mut updated_config = (*next_configuration.original_config_do_not_use).clone();
-            updated_config.subagent_reasoning_effort = subagent_effort;
-            next_configuration.original_config_do_not_use = Arc::new(updated_config);
-        }
         Ok(next_configuration)
     }
 }
@@ -665,31 +656,6 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     pub(crate) personality: Option<Personality>,
-    pub(crate) disallowed_tools: Option<Vec<String>>,
-    pub(crate) subagent_model: Option<Option<String>>,
-    pub(crate) subagent_effort: Option<Option<ReasoningEffortConfig>>,
-    pub(crate) max_output_tokens: Option<u32>,
-    pub(crate) history_depth: Option<u32>,
-    pub(crate) terminal_size: Option<TerminalSize>,
-    pub(crate) turn_max_output_tokens: Option<u32>,
-    pub(crate) turn_history_depth: Option<u32>,
-}
-
-#[derive(Default, Clone)]
-pub(crate) struct TurnOverrides {
-    pub(crate) final_output_json_schema: Option<Option<Value>>,
-    pub(crate) max_output_tokens: Option<u32>,
-    pub(crate) history_depth: Option<u32>,
-}
-
-impl SessionSettingsUpdate {
-    fn turn_overrides(&self) -> TurnOverrides {
-        TurnOverrides {
-            final_output_json_schema: self.final_output_json_schema.clone(),
-            max_output_tokens: self.turn_max_output_tokens,
-            history_depth: self.turn_history_depth,
-        }
-    }
 }
 
 impl Session {
@@ -750,13 +716,13 @@ impl Session {
             model_info: &model_info,
             features: &per_turn_config.features,
             web_search_mode: per_turn_config.web_search_mode,
-            disallowed_tools: &per_turn_config.disallowed_tools,
         });
 
+        let cwd = session_configuration.cwd.clone();
         TurnContext {
             sub_id,
             client,
-            cwd: session_configuration.cwd.clone(),
+            cwd,
             developer_instructions: session_configuration.developer_instructions.clone(),
             compact_prompt: session_configuration.compact_prompt.clone(),
             user_instructions: session_configuration.user_instructions.clone(),
@@ -769,13 +735,11 @@ impl Session {
             tools_config,
             ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,
-            max_output_tokens: session_configuration.max_output_tokens,
-            history_depth: session_configuration.history_depth,
             codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
             dynamic_tools: session_configuration.dynamic_tools.clone(),
-            terminal_size: session_configuration.terminal_size,
+            turn_metadata_header: OnceCell::new(),
         }
     }
 
@@ -1058,7 +1022,6 @@ impl Session {
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
-        sess.spawn_lazy_resume_loader_if_needed().await;
 
         Ok(sess)
     }
@@ -1123,13 +1086,6 @@ impl Session {
                 self.flush_rollout().await;
             }
             InitialHistory::Resumed(resumed_history) => {
-                if resumed_history.is_lazy {
-                    let mut state = self.state.lock().await;
-                    state.initial_context_seeded = false;
-                    state.pending_resumed_rollout = Some(resumed_history.rollout_path.clone());
-                    return;
-                }
-
                 let rollout_items = resumed_history.history;
                 {
                     let mut state = self.state.lock().await;
@@ -1218,21 +1174,6 @@ impl Session {
         }
     }
 
-    async fn spawn_lazy_resume_loader_if_needed(self: &Arc<Self>) {
-        let should_spawn = {
-            let state = self.state.lock().await;
-            state.pending_resumed_rollout.is_some()
-        };
-        if !should_spawn {
-            return;
-        }
-        let session = Arc::clone(self);
-        tokio::spawn(async move {
-            let turn_context = session.new_default_turn().await;
-            session.ensure_resumed_history_loaded(&turn_context).await;
-        });
-    }
-
     fn last_token_info_from_rollout(rollout_items: &[RolloutItem]) -> Option<TokenUsageInfo> {
         rollout_items.iter().rev().find_map(|item| match item {
             RolloutItem::EventMsg(EventMsg::TokenCount(ev)) => ev.info.clone(),
@@ -1244,10 +1185,9 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
-        let terminal_size = updates.terminal_size;
         let mut state = self.state.lock().await;
 
-        let result = match state.session_configuration.apply(&updates) {
+        match state.session_configuration.apply(&updates) {
             Ok(updated) => {
                 state.session_configuration = updated;
                 Ok(())
@@ -1256,17 +1196,7 @@ impl Session {
                 warn!("rejected session settings update: {err}");
                 Err(err)
             }
-        };
-        drop(state);
-
-        if let (Ok(_), Some(terminal_size)) = (result.as_ref(), terminal_size) {
-            self.services
-                .unified_exec_manager
-                .resize_ttys(terminal_size)
-                .await;
         }
-
-        result
     }
 
     pub(crate) async fn new_turn_with_sub_id(
@@ -1274,7 +1204,6 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<Arc<TurnContext>> {
-        let terminal_size = updates.terminal_size;
         let (session_configuration, sandbox_policy_changed) = {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
@@ -1298,19 +1227,12 @@ impl Session {
                 }
             }
         };
-        let overrides = updates.turn_overrides();
-        if let Some(terminal_size) = terminal_size {
-            self.services
-                .unified_exec_manager
-                .resize_ttys(terminal_size)
-                .await;
-        }
 
         Ok(self
             .new_turn_from_configuration(
                 sub_id,
                 session_configuration,
-                overrides,
+                updates.final_output_json_schema,
                 sandbox_policy_changed,
             )
             .await)
@@ -1320,7 +1242,7 @@ impl Session {
         &self,
         sub_id: String,
         session_configuration: SessionConfiguration,
-        overrides: TurnOverrides,
+        final_output_json_schema: Option<Option<Value>>,
         sandbox_policy_changed: bool,
     ) -> Arc<TurnContext> {
         let per_turn_config = Self::build_per_turn_config(&session_configuration);
@@ -1362,17 +1284,13 @@ impl Session {
             sub_id,
             self.services.transport_manager.clone(),
         );
-        if let Some(final_schema) = overrides.final_output_json_schema {
+
+        if let Some(final_schema) = final_output_json_schema {
             turn_context.final_output_json_schema = final_schema;
         }
-        if let Some(max_output_tokens) = overrides.max_output_tokens {
-            turn_context.max_output_tokens = Some(max_output_tokens);
-        }
-        if let Some(history_depth) = overrides.history_depth {
-            turn_context.history_depth =
-                SessionConfiguration::normalize_history_depth(history_depth);
-        }
-        Arc::new(turn_context)
+        let turn_context = Arc::new(turn_context);
+        turn_context.spawn_turn_metadata_header_task();
+        turn_context
     }
 
     pub(crate) async fn new_default_turn(&self) -> Arc<TurnContext> {
@@ -1393,13 +1311,8 @@ impl Session {
             let state = self.state.lock().await;
             state.session_configuration.clone()
         };
-        self.new_turn_from_configuration(
-            sub_id,
-            session_configuration,
-            TurnOverrides::default(),
-            false,
-        )
-        .await
+        self.new_turn_from_configuration(sub_id, session_configuration, None, false)
+            .await
     }
 
     pub(crate) async fn current_collaboration_mode(&self) -> CollaborationMode {
@@ -1554,12 +1467,6 @@ impl Session {
         // Persist the event into rollout (recorder filters as needed)
         let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
         self.persist_rollout_items(&rollout_items).await;
-        if let Err(e) = self.tx_event.send(event).await {
-            debug!("dropping event because channel is closed: {e}");
-        }
-    }
-
-    pub(crate) async fn send_event_unrecorded(&self, event: Event) {
         if let Err(e) = self.tx_event.send(event).await {
             debug!("dropping event because channel is closed: {e}");
         }
@@ -1954,100 +1861,7 @@ impl Session {
         state.replace_history(items);
     }
 
-    async fn ensure_resumed_history_loaded(&self, turn_context: &TurnContext) {
-        let rollout_path = {
-            let mut state = self.state.lock().await;
-            state.pending_resumed_rollout.take()
-        };
-        let Some(rollout_path) = rollout_path else {
-            return;
-        };
-
-        let (rollout_items, _thread_id, parse_errors) =
-            match RolloutRecorder::load_rollout_items(&rollout_path).await {
-                Ok(result) => result,
-                Err(err) => {
-                    warn!(
-                        "failed to load resumed rollout at {}: {err}",
-                        rollout_path.display()
-                    );
-                    self.send_event_raw(Event {
-                    id: turn_context.sub_id.clone(),
-                    msg: EventMsg::Warning(WarningEvent {
-                        message: format!(
-                            "Failed to load prior session history from {}. Continuing without it.",
-                            rollout_path.display()
-                        ),
-                    }),
-                })
-                .await;
-                    return;
-                }
-            };
-
-        if parse_errors > 0 {
-            warn!(
-                "resumed rollout had {parse_errors} parse errors at {}",
-                rollout_path.display()
-            );
-        }
-
-        if rollout_items.is_empty() {
-            return;
-        }
-
-        if let Some(prev) = rollout_items.iter().rev().find_map(|it| {
-            if let RolloutItem::TurnContext(ctx) = it {
-                Some(ctx.model.as_str())
-            } else {
-                None
-            }
-        }) {
-            let curr = turn_context.client.get_model();
-            if prev != curr {
-                warn!("resuming session with different model: previous={prev}, current={curr}");
-                self.send_event(
-                    turn_context,
-                    EventMsg::Warning(WarningEvent {
-                        message: format!(
-                            "This session was recorded with model `{prev}` but is resuming with `{curr}`. \
-                         Consider switching back to `{prev}` as it may affect Codex performance."
-                        ),
-                    }),
-                )
-                .await;
-            }
-        }
-
-        let reconstructed_history = self
-            .reconstruct_history_from_rollout(turn_context, &rollout_items)
-            .await;
-        if !reconstructed_history.is_empty() {
-            self.record_into_history(&reconstructed_history, turn_context)
-                .await;
-        }
-
-        if let Some(info) = Self::last_token_info_from_rollout(&rollout_items) {
-            let mut state = self.state.lock().await;
-            state.set_token_info(Some(info));
-        }
-
-        for event in rollout_items.into_iter().filter_map(|item| match item {
-            RolloutItem::EventMsg(event) => Some(event),
-            _ => None,
-        }) {
-            self.send_event_unrecorded(Event {
-                id: INITIAL_SUBMIT_ID.to_owned(),
-                msg: event,
-            })
-            .await;
-        }
-
-        self.flush_rollout().await;
-    }
-
     pub(crate) async fn seed_initial_context_if_needed(&self, turn_context: &TurnContext) {
-        self.ensure_resumed_history_loaded(turn_context).await;
         {
             let mut state = self.state.lock().await;
             if state.initial_context_seeded {
@@ -2077,6 +1891,11 @@ impl Session {
 
     pub(crate) fn features(&self) -> Features {
         self.features.clone()
+    }
+
+    pub(crate) async fn collaboration_mode(&self) -> CollaborationMode {
+        let state = self.state.lock().await;
+        state.session_configuration.collaboration_mode.clone()
     }
 
     async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[ResponseItem]) {
@@ -2625,16 +2444,10 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 sandbox_policy,
                 windows_sandbox_level,
                 model,
-                subagent_model,
-                subagent_effort,
                 effort,
                 summary,
-                max_output_tokens,
-                history_depth,
                 collaboration_mode,
                 personality,
-                disallowed_tools,
-                terminal_size,
             } => {
                 let collaboration_mode = if let Some(collab_mode) = collaboration_mode {
                     collab_mode
@@ -2656,13 +2469,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         windows_sandbox_level,
                         collaboration_mode: Some(collaboration_mode),
                         reasoning_summary: summary,
-                        max_output_tokens,
-                        history_depth,
                         personality,
-                        disallowed_tools,
-                        subagent_model,
-                        subagent_effort,
-                        terminal_size,
                         ..Default::default()
                     },
                 )
@@ -2694,9 +2501,6 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::ListMcpTools => {
                 handlers::list_mcp_tools(&sess, &config, sub.id.clone()).await;
             }
-            Op::ListTools => {
-                handlers::list_tools(&sess, sub.id.clone()).await;
-            }
             Op::RefreshMcpServers { config } => {
                 handlers::refresh_mcp_servers(&sess, config).await;
             }
@@ -2705,6 +2509,22 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             }
             Op::ListSkills { cwds, force_reload } => {
                 handlers::list_skills(&sess, sub.id.clone(), cwds, force_reload).await;
+            }
+            Op::ListRemoteSkills => {
+                handlers::list_remote_skills(&sess, &config, sub.id.clone()).await;
+            }
+            Op::DownloadRemoteSkill {
+                hazelnut_id,
+                is_preload,
+            } => {
+                handlers::download_remote_skill(
+                    &sess,
+                    &config,
+                    sub.id.clone(),
+                    hazelnut_id,
+                    is_preload,
+                )
+                .await;
             }
             Op::Undo => {
                 handlers::undo(&sess, sub.id.clone()).await;
@@ -2726,9 +2546,6 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                     &mut previous_context,
                 )
                 .await;
-            }
-            Op::TerminateUnifiedExec { process_id } => {
-                handlers::terminate_unified_exec(&sess, sub.id.clone(), process_id).await;
             }
             Op::ResolveElicitation {
                 server_name,
@@ -2769,22 +2586,23 @@ mod handlers {
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
-    use crate::tools::spec::build_specs;
     use codex_protocol::custom_prompts::CustomPrompt;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::Event;
     use codex_protocol::protocol::EventMsg;
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
+    use codex_protocol::protocol::ListRemoteSkillsResponseEvent;
     use codex_protocol::protocol::ListSkillsResponseEvent;
     use codex_protocol::protocol::McpServerRefreshConfig;
     use codex_protocol::protocol::Op;
+    use codex_protocol::protocol::RemoteSkillDownloadedEvent;
+    use codex_protocol::protocol::RemoteSkillSummary;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::SkillsListEntry;
     use codex_protocol::protocol::ThreadNameUpdatedEvent;
     use codex_protocol::protocol::ThreadRolledBackEvent;
-    use codex_protocol::protocol::ToolsListResponseEvent;
     use codex_protocol::protocol::TurnAbortReason;
     use codex_protocol::protocol::WarningEvent;
     use codex_protocol::request_user_input::RequestUserInputResponse;
@@ -2838,8 +2656,6 @@ mod handlers {
                 model,
                 effort,
                 summary,
-                max_output_tokens,
-                history_depth,
                 final_output_json_schema,
                 items,
                 collaboration_mode,
@@ -2866,9 +2682,6 @@ mod handlers {
                         reasoning_summary: Some(summary),
                         final_output_json_schema: Some(final_output_json_schema),
                         personality,
-                        turn_max_output_tokens: max_output_tokens,
-                        turn_history_depth: history_depth,
-                        ..Default::default()
                     },
                 )
             }
@@ -2926,23 +2739,6 @@ mod handlers {
         )
         .await;
         *previous_context = Some(turn_context);
-    }
-
-    pub async fn terminate_unified_exec(sess: &Arc<Session>, sub_id: String, process_id: String) {
-        if let Err(err) = sess
-            .services
-            .unified_exec_manager
-            .terminate_process(&process_id)
-            .await
-        {
-            let message = format!("Failed to terminate background terminal {process_id}: {err}");
-            warn!("{message}");
-            sess.send_event_raw(Event {
-                id: sub_id,
-                msg: EventMsg::Warning(WarningEvent { message }),
-            })
-            .await;
-        }
     }
 
     pub async fn resolve_elicitation(
@@ -3109,35 +2905,6 @@ mod handlers {
         sess.send_event_raw(event).await;
     }
 
-    pub async fn list_tools(sess: &Session, sub_id: String) {
-        let turn_context = sess.new_default_turn().await;
-        let mcp_connection_manager = sess.services.mcp_connection_manager.read().await;
-        let mcp_tools = mcp_connection_manager
-            .list_all_tools()
-            .await
-            .into_iter()
-            .map(|(name, tool)| (name, tool.tool))
-            .collect();
-        let builder = build_specs(
-            &turn_context.tools_config,
-            Some(mcp_tools),
-            turn_context.dynamic_tools.as_slice(),
-        );
-        let (specs, _registry) = builder.build();
-        let mut tools: Vec<String> = specs
-            .into_iter()
-            .map(|spec| spec.spec.name().to_string())
-            .collect();
-        tools.sort();
-        tools.dedup();
-
-        let event = Event {
-            id: sub_id,
-            msg: EventMsg::ToolsListResponse(ToolsListResponseEvent { tools }),
-        };
-        sess.send_event_raw(event).await;
-    }
-
     pub async fn list_custom_prompts(sess: &Session, sub_id: String) {
         let custom_prompts: Vec<CustomPrompt> =
             if let Some(dir) = crate::custom_prompts::default_prompts_dir() {
@@ -3188,6 +2955,77 @@ mod handlers {
         sess.send_event_raw(event).await;
     }
 
+    pub async fn list_remote_skills(sess: &Session, config: &Arc<Config>, sub_id: String) {
+        let response = crate::skills::remote::list_remote_skills(config)
+            .await
+            .map(|skills| {
+                skills
+                    .into_iter()
+                    .map(|skill| RemoteSkillSummary {
+                        id: skill.id,
+                        name: skill.name,
+                        description: skill.description,
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+        match response {
+            Ok(skills) => {
+                let event = Event {
+                    id: sub_id,
+                    msg: EventMsg::ListRemoteSkillsResponse(ListRemoteSkillsResponseEvent {
+                        skills,
+                    }),
+                };
+                sess.send_event_raw(event).await;
+            }
+            Err(err) => {
+                let event = Event {
+                    id: sub_id,
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: format!("failed to list remote skills: {err}"),
+                        codex_error_info: Some(CodexErrorInfo::Other),
+                    }),
+                };
+                sess.send_event_raw(event).await;
+            }
+        }
+    }
+
+    pub async fn download_remote_skill(
+        sess: &Session,
+        config: &Arc<Config>,
+        sub_id: String,
+        hazelnut_id: String,
+        is_preload: bool,
+    ) {
+        match crate::skills::remote::download_remote_skill(config, hazelnut_id.as_str(), is_preload)
+            .await
+        {
+            Ok(result) => {
+                let event = Event {
+                    id: sub_id,
+                    msg: EventMsg::RemoteSkillDownloaded(RemoteSkillDownloadedEvent {
+                        id: result.id,
+                        name: result.name,
+                        path: result.path,
+                    }),
+                };
+                sess.send_event_raw(event).await;
+            }
+            Err(err) => {
+                let event = Event {
+                    id: sub_id,
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: format!("failed to download remote skill {hazelnut_id}: {err}"),
+                        codex_error_info: Some(CodexErrorInfo::Other),
+                    }),
+                };
+                sess.send_event_raw(event).await;
+            }
+        }
+    }
+
     pub async fn undo(sess: &Arc<Session>, sub_id: String) {
         let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
         sess.spawn_task(turn_context, Vec::new(), UndoTask::new())
@@ -3236,7 +3074,6 @@ mod handlers {
         }
 
         let turn_context = sess.new_default_turn_with_sub_id(sub_id).await;
-        sess.ensure_resumed_history_loaded(&turn_context).await;
 
         let mut history = sess.clone_history().await;
         history.drop_last_n_user_turns(num_turns);
@@ -3426,7 +3263,6 @@ async fn spawn_review_thread(
         model_info: &review_model_info,
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
-        disallowed_tools: &config.disallowed_tools,
     });
 
     let review_prompt = resolved.prompt.clone();
@@ -3475,13 +3311,11 @@ async fn spawn_review_thread(
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         cwd: parent_turn_context.cwd.clone(),
         final_output_json_schema: None,
-        max_output_tokens: parent_turn_context.max_output_tokens,
-        history_depth: parent_turn_context.history_depth,
         codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
-        terminal_size: parent_turn_context.terminal_size,
         truncation_policy: model_info.truncation_policy.into(),
+        turn_metadata_header: parent_turn_context.turn_metadata_header.clone(),
     };
 
     // Seed the child task with the review prompt as the initial user message.
@@ -3576,8 +3410,6 @@ pub(crate) async fn run_turn(
     input: Vec<UserInput>,
     cancellation_token: CancellationToken,
 ) -> Option<String> {
-    let (input, explicit_mcp_calls, explicit_mcp_warnings) =
-        extract_explicit_mcp_calls_from_input(input);
     if input.is_empty() {
         return None;
     }
@@ -3670,10 +3502,6 @@ pub(crate) async fn run_turn(
         sess.send_event(&turn_context, EventMsg::Warning(WarningEvent { message }))
             .await;
     }
-    for message in explicit_mcp_warnings {
-        sess.send_event(&turn_context, EventMsg::Warning(WarningEvent { message }))
-            .await;
-    }
 
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input.clone());
     let response_item: ResponseItem = initial_input_for_turn.clone().into();
@@ -3687,37 +3515,13 @@ pub(crate) async fn run_turn(
 
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
+    let mut last_agent_message: Option<String> = None;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
-    if !explicit_mcp_calls.is_empty() {
-        let explicit_items = if turn_context.tools_config.mcp_search_enabled {
-            run_explicit_mcp_tool_calls_via_search(
-                &sess,
-                &turn_context,
-                &turn_diff_tracker,
-                explicit_mcp_calls,
-            )
-            .await
-        } else {
-            run_explicit_mcp_tool_calls(
-                &sess,
-                &turn_context,
-                &turn_diff_tracker,
-                explicit_mcp_calls,
-            )
-            .await
-        };
-        if !explicit_items.is_empty() {
-            sess.record_conversation_items(&turn_context, &explicit_items)
-                .await;
-        }
-    }
-    let mut last_agent_message: Option<String> = None;
 
-    let mut client_session = turn_context
-        .client
-        .new_session(Some(turn_context.cwd.clone()));
+    let turn_metadata_header = turn_context.resolve_turn_metadata_header().await;
+    let mut client_session = turn_context.client.new_session(turn_metadata_header);
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -3734,11 +3538,7 @@ pub(crate) async fn run_turn(
         let sampling_request_input: Vec<ResponseItem> = {
             sess.record_conversation_items(&turn_context, &pending_input)
                 .await;
-            let mut history = sess.clone_history().await;
-            if let Some(history_depth) = turn_context.history_depth {
-                history.retain_last_n_user_turns(history_depth);
-            }
-            history.for_prompt()
+            sess.clone_history().await.for_prompt()
         };
 
         let sampling_request_input_messages = sampling_request_input
@@ -3836,436 +3636,6 @@ pub(crate) async fn run_turn(
     }
 
     last_agent_message
-}
-
-fn extract_explicit_mcp_calls_from_input(
-    input: Vec<UserInput>,
-) -> (Vec<UserInput>, Vec<ExplicitMcpToolCall>, Vec<String>) {
-    let mut cleaned_items = Vec::with_capacity(input.len());
-    let mut explicit_calls = Vec::new();
-    let mut warnings = Vec::new();
-
-    for item in input {
-        match item {
-            UserInput::Text {
-                text,
-                text_elements,
-            } => {
-                let parsed = extract_explicit_mcp_tool_calls(&text);
-                explicit_calls.extend(parsed.calls);
-                warnings.extend(parsed.warnings);
-
-                let cleaned_text = parsed.cleaned_text;
-                if cleaned_text.trim().is_empty() {
-                    continue;
-                }
-
-                if cleaned_text == text {
-                    cleaned_items.push(UserInput::Text {
-                        text,
-                        text_elements,
-                    });
-                } else {
-                    cleaned_items.push(UserInput::Text {
-                        text: cleaned_text,
-                        text_elements: Vec::new(),
-                    });
-                }
-            }
-            other => cleaned_items.push(other),
-        }
-    }
-
-    let has_non_text = cleaned_items
-        .iter()
-        .any(|item| !matches!(item, UserInput::Text { .. }));
-    let has_non_empty_text = cleaned_items
-        .iter()
-        .any(|item| matches!(item, UserInput::Text { text, .. } if !text.trim().is_empty()));
-    if !has_non_text && !has_non_empty_text && !explicit_calls.is_empty() {
-        cleaned_items.push(UserInput::Text {
-            text: "Please use the MCP tool outputs above.".to_string(),
-            text_elements: Vec::new(),
-        });
-    }
-
-    (cleaned_items, explicit_calls, warnings)
-}
-
-async fn run_explicit_mcp_tool_calls(
-    sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
-    turn_diff_tracker: &SharedTurnDiffTracker,
-    calls: Vec<ExplicitMcpToolCall>,
-) -> Vec<ResponseItem> {
-    let mcp_tools = sess
-        .services
-        .mcp_connection_manager
-        .read()
-        .await
-        .list_all_tools()
-        .await
-        .into_iter()
-        .map(|(name, tool)| (name, tool.tool))
-        .collect::<HashMap<_, _>>();
-
-    let router = ToolRouter::from_config(
-        &turn_context.tools_config,
-        Some(mcp_tools.clone()),
-        turn_context.dynamic_tools.as_slice(),
-    );
-    let mut items = Vec::new();
-
-    for call in calls {
-        let tool = mcp_tools.get(&call.qualified_name);
-        let arguments = match coerce_explicit_mcp_arguments(&call, tool) {
-            ExplicitMcpArgsOutcome::Ready(arguments) => arguments,
-            ExplicitMcpArgsOutcome::NeedsInput(message) => {
-                sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
-                    .await;
-                continue;
-            }
-        };
-        let call_id = Uuid::new_v4().to_string();
-        items.push(ResponseItem::FunctionCall {
-            id: None,
-            name: call.qualified_name.clone(),
-            arguments: arguments.clone(),
-            call_id: call_id.clone(),
-        });
-
-        let tool_call = crate::tools::router::ToolCall {
-            tool_name: call.qualified_name,
-            call_id: call_id.clone(),
-            payload: crate::tools::context::ToolPayload::Mcp {
-                server: call.server,
-                tool: call.tool,
-                raw_arguments: arguments,
-            },
-        };
-
-        match router
-            .dispatch_tool_call(
-                Arc::clone(sess),
-                Arc::clone(turn_context),
-                Arc::clone(turn_diff_tracker),
-                tool_call,
-            )
-            .await
-        {
-            Ok(output) => items.push(ResponseItem::from(output)),
-            Err(err) => items.push(ResponseItem::FunctionCallOutput {
-                call_id,
-                output: codex_protocol::models::FunctionCallOutputPayload {
-                    content: err.to_string(),
-                    success: Some(false),
-                    ..Default::default()
-                },
-            }),
-        }
-    }
-
-    items
-}
-
-async fn run_explicit_mcp_tool_calls_via_search(
-    sess: &Arc<Session>,
-    turn_context: &Arc<TurnContext>,
-    turn_diff_tracker: &SharedTurnDiffTracker,
-    calls: Vec<ExplicitMcpToolCall>,
-) -> Vec<ResponseItem> {
-    let mcp_tools = sess
-        .services
-        .mcp_connection_manager
-        .read()
-        .await
-        .list_all_tools()
-        .await
-        .into_iter()
-        .map(|(name, tool)| (name, tool.tool))
-        .collect::<HashMap<_, _>>();
-
-    let router = ToolRouter::from_config(
-        &turn_context.tools_config,
-        Some(mcp_tools.clone()),
-        turn_context.dynamic_tools.as_slice(),
-    );
-    let mut items = Vec::new();
-
-    for call in calls {
-        let tool = mcp_tools.get(&call.qualified_name);
-        let arguments = match coerce_explicit_mcp_arguments(&call, tool) {
-            ExplicitMcpArgsOutcome::Ready(arguments) => arguments,
-            ExplicitMcpArgsOutcome::NeedsInput(message) => {
-                sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
-                    .await;
-                continue;
-            }
-        };
-
-        let arguments_value = match serde_json::from_str::<Value>(&arguments) {
-            Ok(value) => value,
-            Err(err) => {
-                let message = format!("Failed to parse MCP arguments for MCPSearch: {err}");
-                sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
-                    .await;
-                continue;
-            }
-        };
-
-        let search_payload = serde_json::json!({
-            "call": {
-                "qualified_name": call.qualified_name,
-                "arguments": arguments_value,
-            }
-        });
-        let search_arguments = match serde_json::to_string(&search_payload) {
-            Ok(value) => value,
-            Err(err) => {
-                let message = format!("Failed to serialize MCPSearch call payload: {err}");
-                sess.send_event(turn_context, EventMsg::Warning(WarningEvent { message }))
-                    .await;
-                continue;
-            }
-        };
-
-        let call_id = Uuid::new_v4().to_string();
-        items.push(ResponseItem::FunctionCall {
-            id: None,
-            name: MCP_SEARCH_TOOL_NAME.to_string(),
-            arguments: search_arguments.clone(),
-            call_id: call_id.clone(),
-        });
-
-        let tool_call = crate::tools::router::ToolCall {
-            tool_name: MCP_SEARCH_TOOL_NAME.to_string(),
-            call_id: call_id.clone(),
-            payload: crate::tools::context::ToolPayload::Function {
-                arguments: search_arguments,
-            },
-        };
-
-        match router
-            .dispatch_tool_call(
-                Arc::clone(sess),
-                Arc::clone(turn_context),
-                Arc::clone(turn_diff_tracker),
-                tool_call,
-            )
-            .await
-        {
-            Ok(output) => items.push(ResponseItem::from(output)),
-            Err(err) => items.push(ResponseItem::FunctionCallOutput {
-                call_id,
-                output: codex_protocol::models::FunctionCallOutputPayload {
-                    content: err.to_string(),
-                    success: Some(false),
-                    ..Default::default()
-                },
-            }),
-        }
-    }
-
-    items
-}
-
-enum ExplicitMcpArgsOutcome {
-    Ready(String),
-    NeedsInput(String),
-}
-
-fn coerce_explicit_mcp_arguments(
-    call: &ExplicitMcpToolCall,
-    tool: Option<&McpTool>,
-) -> ExplicitMcpArgsOutcome {
-    let raw = call.raw_arguments.trim();
-    if raw.is_empty() {
-        return ExplicitMcpArgsOutcome::Ready("{}".to_string());
-    }
-    if serde_json::from_str::<Value>(raw).is_ok() {
-        return ExplicitMcpArgsOutcome::Ready(raw.to_string());
-    }
-    let Some(tool) = tool else {
-        return ExplicitMcpArgsOutcome::NeedsInput(format!(
-            "Unknown MCP tool {name}. Type @mcp to browse available tools.",
-            name = call.qualified_name
-        ));
-    };
-
-    match coerce_mcp_shorthand_arguments(raw, tool) {
-        ShorthandCoercion::Ready(arguments) => ExplicitMcpArgsOutcome::Ready(arguments),
-        ShorthandCoercion::NeedsFields { key, missing } => {
-            ExplicitMcpArgsOutcome::NeedsInput(build_missing_fields_error(call, &key, raw, missing))
-        }
-        ShorthandCoercion::Unsupported => {
-            ExplicitMcpArgsOutcome::NeedsInput(build_mcp_args_error(call, tool, None, None))
-        }
-    }
-}
-
-enum ShorthandCoercion {
-    Ready(String),
-    NeedsFields { key: String, missing: Vec<String> },
-    Unsupported,
-}
-
-fn coerce_mcp_shorthand_arguments(raw: &str, tool: &McpTool) -> ShorthandCoercion {
-    let required = tool_required_fields(tool);
-    let properties = tool_property_keys(tool);
-    let candidate = pick_shorthand_key(&required, &properties);
-    let Some(key) = candidate else {
-        return ShorthandCoercion::Unsupported;
-    };
-
-    if required.is_empty() || required == vec![key.clone()] {
-        let arguments = serde_json::to_string(&serde_json::json!({ key: raw }))
-            .unwrap_or_else(|_| "{}".to_string());
-        return ShorthandCoercion::Ready(arguments);
-    }
-
-    let missing = required
-        .into_iter()
-        .filter(|field| field != &key)
-        .collect::<Vec<_>>();
-    if missing.is_empty() {
-        let arguments = serde_json::to_string(&serde_json::json!({ key: raw }))
-            .unwrap_or_else(|_| "{}".to_string());
-        ShorthandCoercion::Ready(arguments)
-    } else {
-        ShorthandCoercion::NeedsFields { key, missing }
-    }
-}
-
-fn tool_required_fields(tool: &McpTool) -> Vec<String> {
-    tool.input_schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|fields| {
-            let mut fields = fields
-                .iter()
-                .filter_map(|field| field.as_str().map(str::to_string))
-                .collect::<Vec<_>>();
-            fields.sort();
-            fields
-        })
-        .unwrap_or_default()
-}
-
-fn tool_property_keys(tool: &McpTool) -> Vec<String> {
-    tool.input_schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .map(|map| {
-            let mut keys: Vec<String> = map.keys().cloned().collect();
-            keys.sort();
-            keys
-        })
-        .unwrap_or_default()
-}
-
-fn pick_shorthand_key(required: &[String], properties: &[String]) -> Option<String> {
-    if required.len() == 1 {
-        return required.first().cloned();
-    }
-    let preferred = [
-        "question", "query", "prompt", "input", "text", "url", "path",
-    ];
-    for key in preferred {
-        if required.contains(&key.to_string()) {
-            return Some(key.to_string());
-        }
-    }
-    if properties.len() == 1 {
-        return properties.first().cloned();
-    }
-    for key in preferred {
-        if properties.contains(&key.to_string()) {
-            return Some(key.to_string());
-        }
-    }
-    None
-}
-
-fn build_mcp_args_error(
-    call: &ExplicitMcpToolCall,
-    tool: &McpTool,
-    known_key: Option<&str>,
-    shorthand: Option<&str>,
-) -> String {
-    let required = tool_required_fields(tool);
-    let properties = tool_property_keys(tool);
-
-    let (field_label, example_fields) = if !required.is_empty() {
-        (
-            format!("Required fields: {}.", required.join(", ")),
-            required,
-        )
-    } else if !properties.is_empty() {
-        (
-            format!(
-                "Expected JSON object with keys like: {}.",
-                properties.join(", ")
-            ),
-            properties,
-        )
-    } else {
-        ("Expected JSON object arguments.".to_string(), Vec::new())
-    };
-
-    let mut example_map = serde_json::Map::new();
-    let example_fields: Vec<String> = example_fields.into_iter().take(4).collect();
-    if example_fields.is_empty() {
-        example_map.insert("input".to_string(), Value::String("value".to_string()));
-    } else {
-        for field in example_fields {
-            let value = if known_key.is_some_and(|key| key == field)
-                && let Some(shorthand) = shorthand
-            {
-                Value::String(shorthand.to_string())
-            } else {
-                example_value_for_key(&field)
-            };
-            example_map.insert(field, value);
-        }
-    }
-    let example_json = serde_json::to_string(&Value::Object(example_map))
-        .unwrap_or_else(|_| "{\"input\":\"value\"}".to_string());
-
-    format!(
-        "Invalid MCP tool arguments for {name}. {field_label} Example: @{name} {example_json}. Plain-text shorthand only works for tools that accept a single string field.",
-        name = call.qualified_name
-    )
-}
-
-fn build_missing_fields_error(
-    call: &ExplicitMcpToolCall,
-    key: &str,
-    shorthand: &str,
-    missing: Vec<String>,
-) -> String {
-    let mut example_map = serde_json::Map::new();
-    example_map.insert(key.to_string(), Value::String(shorthand.to_string()));
-    for field in &missing {
-        example_map.insert(field.clone(), example_value_for_key(field));
-    }
-    let example_json = serde_json::to_string(&Value::Object(example_map))
-        .unwrap_or_else(|_| "{\"input\":\"value\"}".to_string());
-    let missing_label = missing.join(", ");
-    format!(
-        "Missing required fields for {name}: {missing_label}. I used your text as `{key}`. Example: @{name} {example_json}.",
-        name = call.qualified_name
-    )
-}
-
-fn example_value_for_key(key: &str) -> Value {
-    let value = match key {
-        "repo" | "repoName" | "repository" => "owner/repo",
-        "url" | "uri" => "https://example.com",
-        "path" | "file" | "filename" => "path/to/file",
-        "query" | "question" | "prompt" | "input" | "text" => "value",
-        _ => "value",
-    };
-    Value::String(value.to_string())
 }
 
 async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) {
@@ -4437,7 +3807,6 @@ async fn run_sampling_request(
         parallel_tool_calls: model_supports_parallel,
         base_instructions,
         personality: turn_context.personality,
-        max_output_tokens: turn_context.max_output_tokens,
         output_schema: turn_context.final_output_json_schema.clone(),
     };
 
@@ -4944,8 +4313,6 @@ async fn try_run_sampling_request(
         collaboration_mode: Some(collaboration_mode),
         effort: turn_context.client.get_reasoning_effort(),
         summary: turn_context.client.get_reasoning_summary(),
-        max_output_tokens: turn_context.max_output_tokens,
-        history_depth: turn_context.history_depth,
         user_instructions: turn_context.user_instructions.clone(),
         developer_instructions: turn_context.developer_instructions.clone(),
         final_output_json_schema: turn_context.final_output_json_schema.clone(),
@@ -5253,7 +4620,6 @@ mod tests {
     use crate::protocol::RateLimitSnapshot;
     use crate::protocol::RateLimitWindow;
     use crate::protocol::ResumedHistory;
-    use crate::protocol::RolloutLine;
     use crate::protocol::TokenCountEvent;
     use crate::protocol::TokenUsage;
     use crate::protocol::TokenUsageInfo;
@@ -5439,7 +4805,6 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
-                is_lazy: false,
             }))
             .await;
 
@@ -5457,7 +4822,6 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
-                is_lazy: false,
             }))
             .await;
 
@@ -5472,53 +4836,6 @@ mod tests {
         session.seed_initial_context_if_needed(&turn_context).await;
         let history_after_second_seed = session.clone_history().await;
         assert_eq!(expected, history_after_second_seed.raw_items());
-    }
-
-    #[tokio::test]
-    async fn lazy_resumed_history_loads_in_background() {
-        let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
-        let (rollout_items, expected) =
-            sample_rollout(session.as_ref(), turn_context.as_ref()).await;
-        let rollout_path = tempfile::NamedTempFile::new()
-            .expect("create rollout file")
-            .into_temp_path();
-        let rollout_path_buf = rollout_path.to_path_buf();
-        let jsonl = rollout_items
-            .into_iter()
-            .map(|item| {
-                let line = RolloutLine {
-                    timestamp: "2024-01-01T00:00:00Z".to_string(),
-                    item,
-                };
-                serde_json::to_string(&line).expect("serialize rollout line")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(&rollout_path_buf, format!("{jsonl}\n")).expect("write rollout file");
-
-        session
-            .record_initial_history(InitialHistory::Resumed(ResumedHistory {
-                conversation_id: ThreadId::default(),
-                history: Vec::new(),
-                rollout_path: rollout_path_buf,
-                is_lazy: true,
-            }))
-            .await;
-        session.spawn_lazy_resume_loader_if_needed().await;
-
-        let history = tokio::time::timeout(StdDuration::from_secs(2), async {
-            loop {
-                let history = session.clone_history().await;
-                if history.raw_items() == expected {
-                    break history;
-                }
-                sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("lazy resume background load timed out");
-
-        assert_eq!(expected, history.raw_items());
     }
 
     #[tokio::test]
@@ -5591,7 +4908,6 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
-                is_lazy: false,
             }))
             .await;
 
@@ -5768,9 +5084,6 @@ mod tests {
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
-            max_output_tokens: None,
-            history_depth: None,
-            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
@@ -5854,9 +5167,6 @@ mod tests {
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
-            max_output_tokens: None,
-            history_depth: None,
-            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
@@ -6127,9 +5437,6 @@ mod tests {
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
-            max_output_tokens: None,
-            history_depth: None,
-            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
@@ -6250,9 +5557,6 @@ mod tests {
             provider: config.model_provider.clone(),
             collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
-            max_output_tokens: None,
-            history_depth: None,
-            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
