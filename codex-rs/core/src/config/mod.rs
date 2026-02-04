@@ -1058,6 +1058,10 @@ pub struct ToolsToml {
     #[serde(default)]
     pub view_image: Option<bool>,
 
+    /// Enable the `request_user_input` tool that lets the agent ask questions.
+    #[serde(default)]
+    pub request_user_input: Option<bool>,
+
     /// Tool names that should be excluded from the model tool list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disallowed_tools: Option<Vec<String>>,
@@ -1083,6 +1087,7 @@ impl From<ToolsToml> for Tools {
         Self {
             web_search: tools_toml.web_search,
             view_image: tools_toml.view_image,
+            request_user_input: tools_toml.request_user_input,
             disallowed_tools: tools_toml.disallowed_tools,
         }
     }
@@ -1361,9 +1366,8 @@ impl Config {
         };
 
         let features = Features::from_config(&cfg, &config_profile, feature_overrides);
-        let disallowed_tools = cfg
-            .tools
-            .as_ref()
+        let tools_toml = cfg.tools.as_ref();
+        let mut disallowed_tools = tools_toml
             .and_then(|tools| tools.disallowed_tools.clone())
             .unwrap_or_default()
             .into_iter()
@@ -1376,6 +1380,16 @@ impl Config {
                 }
             })
             .collect::<Vec<_>>();
+        if let Some(request_user_input) = tools_toml.and_then(|tools| tools.request_user_input) {
+            if request_user_input {
+                disallowed_tools.retain(|tool| tool != "request_user_input");
+            } else if !disallowed_tools
+                .iter()
+                .any(|tool| tool == "request_user_input")
+            {
+                disallowed_tools.push("request_user_input".to_string());
+            }
+        }
         #[cfg(target_os = "windows")]
         {
             // Base flag controls sandbox on/off; elevated only applies when base is enabled.
@@ -4380,6 +4394,68 @@ trust_level = "trusted"
             error
                 .to_string()
                 .contains(OLLAMA_CHAT_PROVIDER_REMOVED_ERROR)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tools_request_user_input_toggle_respects_disallowed_tools() -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            tools: Some(ToolsToml {
+                request_user_input: Some(false),
+                disallowed_tools: Some(vec!["read_file".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+        assert!(
+            config
+                .disallowed_tools
+                .iter()
+                .any(|tool| tool == "request_user_input")
+        );
+        assert!(
+            config
+                .disallowed_tools
+                .iter()
+                .any(|tool| tool == "read_file")
+        );
+
+        let codex_home = TempDir::new()?;
+        let cfg = ConfigToml {
+            tools: Some(ToolsToml {
+                request_user_input: Some(true),
+                disallowed_tools: Some(vec![
+                    "request_user_input".to_string(),
+                    "read_file".to_string(),
+                ]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let config = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )?;
+        assert!(
+            !config
+                .disallowed_tools
+                .iter()
+                .any(|tool| tool == "request_user_input")
+        );
+        assert!(
+            config
+                .disallowed_tools
+                .iter()
+                .any(|tool| tool == "read_file")
         );
 
         Ok(())

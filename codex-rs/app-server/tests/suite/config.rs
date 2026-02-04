@@ -100,6 +100,7 @@ async fn get_config_toml_parses_all_fields() -> Result<()> {
             tools: Some(Tools {
                 web_search: Some(false),
                 view_image: Some(true),
+                request_user_input: None,
                 disallowed_tools: None,
             }),
             profile: Some("test".to_string()),

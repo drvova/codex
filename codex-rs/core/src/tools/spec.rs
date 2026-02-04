@@ -36,6 +36,7 @@ pub(crate) struct ToolsConfig {
     pub request_rule_enabled: bool,
     pub experimental_supported_tools: Vec<String>,
     pub mcp_search_enabled: bool,
+    pub request_user_input_enabled: bool,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -91,6 +92,9 @@ impl ToolsConfig {
                 .collect();
             normalized == MCP_SEARCH_TOOL_NAME_NORMALIZED
         });
+        let request_user_input_enabled = !disallowed_tools
+            .iter()
+            .any(|tool| tool == "request_user_input");
 
         Self {
             shell_type,
@@ -101,6 +105,7 @@ impl ToolsConfig {
             request_rule_enabled,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             mcp_search_enabled,
+            request_user_input_enabled,
         }
     }
 }
@@ -1481,7 +1486,7 @@ pub(crate) fn build_specs(
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
 
-    if config.collaboration_modes_tools {
+    if config.collaboration_modes_tools && config.request_user_input_enabled {
         builder.push_spec_with_parallel_support(create_request_user_input_tool(), true);
         builder.register_handler("request_user_input", request_user_input_handler);
     }

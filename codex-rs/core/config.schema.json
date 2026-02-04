@@ -1007,6 +1007,11 @@
           },
           "type": "array"
         },
+        "request_user_input": {
+          "default": null,
+          "description": "Enable the `request_user_input` tool that lets the agent ask questions.",
+          "type": "boolean"
+        },
         "view_image": {
           "default": null,
           "description": "Enable the `view_image` tool that lets the agent attach local images.",

@@ -48,6 +48,7 @@ want heuristic selection; use `call` for explicit invocation:
 ```toml
 [tools]
 disallowed_tools = ["MCPSearch"]
+request_user_input = true
 ```
 
 ## Agents

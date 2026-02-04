@@ -125,6 +125,7 @@ view_image = false
         ToolsV2 {
             web_search: Some(true),
             view_image: Some(false),
+            request_user_input: None,
             disallowed_tools: None,
         }
     );
