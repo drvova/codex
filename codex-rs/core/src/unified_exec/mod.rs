@@ -34,6 +34,7 @@ use tokio::sync::Mutex;
 use crate::codex::Session;
 use crate::codex::TurnContext;
 use crate::sandboxing::SandboxPermissions;
+use codex_protocol::protocol::TerminalSize;
 
 mod async_watcher;
 mod errors;
@@ -80,6 +81,7 @@ pub(crate) struct ExecCommandRequest {
     pub max_output_tokens: Option<usize>,
     pub workdir: Option<PathBuf>,
     pub tty: bool,
+    pub terminal_size: Option<TerminalSize>,
     pub sandbox_permissions: SandboxPermissions,
     pub justification: Option<String>,
     pub prefix_rule: Option<Vec<String>>,
@@ -91,6 +93,7 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub max_output_tokens: Option<usize>,
+    pub terminal_size: Option<TerminalSize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +207,7 @@ mod tests {
                     max_output_tokens: None,
                     workdir: None,
                     tty: true,
+                    terminal_size: None,
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
                     prefix_rule: None,
@@ -227,6 +231,7 @@ mod tests {
                 input,
                 yield_time_ms,
                 max_output_tokens: None,
+                terminal_size: None,
             })
             .await
     }

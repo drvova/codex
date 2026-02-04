@@ -65,6 +65,13 @@ pub const COLLABORATION_MODE_OPEN_TAG: &str = "<collaboration_mode>";
 pub const COLLABORATION_MODE_CLOSE_TAG: &str = "</collaboration_mode>";
 pub const USER_MESSAGE_BEGIN: &str = "## My request for Codex:";
 
+/// Terminal size in rows/columns.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+pub struct TerminalSize {
+    pub rows: u16,
+    pub cols: u16,
+}
+
 /// Submission Queue Entry - requests from user
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Submission {
@@ -219,6 +226,10 @@ pub enum Op {
         /// Override disallowed tools for subsequent turns.
         #[serde(skip_serializing_if = "Option::is_none")]
         disallowed_tools: Option<Vec<String>>,
+
+        /// Updated terminal size for subsequent turns.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        terminal_size: Option<TerminalSize>,
     },
 
     /// Approve a command execution

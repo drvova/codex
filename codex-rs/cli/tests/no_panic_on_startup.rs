@@ -75,6 +75,7 @@ async fn run_codex_cli(
         cwd.as_ref(),
         &env,
         &None,
+        None,
     )
     .await?;
     let mut output = Vec::new();

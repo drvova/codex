@@ -1058,6 +1058,7 @@ impl Session {
 
         // record_initial_history can emit events. We record only after the SessionConfiguredEvent is emitted.
         sess.record_initial_history(initial_history).await;
+        sess.spawn_lazy_resume_loader_if_needed().await;
 
         Ok(sess)
     }
@@ -1215,6 +1216,21 @@ impl Session {
                 self.flush_rollout().await;
             }
         }
+    }
+
+    async fn spawn_lazy_resume_loader_if_needed(self: &Arc<Self>) {
+        let should_spawn = {
+            let state = self.state.lock().await;
+            state.pending_resumed_rollout.is_some()
+        };
+        if !should_spawn {
+            return;
+        }
+        let session = Arc::clone(self);
+        tokio::spawn(async move {
+            let turn_context = session.new_default_turn().await;
+            session.ensure_resumed_history_loaded(&turn_context).await;
+        });
     }
 
     fn last_token_info_from_rollout(rollout_items: &[RolloutItem]) -> Option<TokenUsageInfo> {
@@ -5237,6 +5253,7 @@ mod tests {
     use crate::protocol::RateLimitSnapshot;
     use crate::protocol::RateLimitWindow;
     use crate::protocol::ResumedHistory;
+    use crate::protocol::RolloutLine;
     use crate::protocol::TokenCountEvent;
     use crate::protocol::TokenUsage;
     use crate::protocol::TokenUsageInfo;
@@ -5455,6 +5472,53 @@ mod tests {
         session.seed_initial_context_if_needed(&turn_context).await;
         let history_after_second_seed = session.clone_history().await;
         assert_eq!(expected, history_after_second_seed.raw_items());
+    }
+
+    #[tokio::test]
+    async fn lazy_resumed_history_loads_in_background() {
+        let (session, turn_context, _rx) = make_session_and_context_with_rx().await;
+        let (rollout_items, expected) =
+            sample_rollout(session.as_ref(), turn_context.as_ref()).await;
+        let rollout_path = tempfile::NamedTempFile::new()
+            .expect("create rollout file")
+            .into_temp_path();
+        let rollout_path_buf = rollout_path.to_path_buf();
+        let jsonl = rollout_items
+            .into_iter()
+            .map(|item| {
+                let line = RolloutLine {
+                    timestamp: "2024-01-01T00:00:00Z".to_string(),
+                    item,
+                };
+                serde_json::to_string(&line).expect("serialize rollout line")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&rollout_path_buf, format!("{jsonl}\n")).expect("write rollout file");
+
+        session
+            .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+                conversation_id: ThreadId::default(),
+                history: Vec::new(),
+                rollout_path: rollout_path_buf,
+                is_lazy: true,
+            }))
+            .await;
+        session.spawn_lazy_resume_loader_if_needed().await;
+
+        let history = tokio::time::timeout(StdDuration::from_secs(2), async {
+            loop {
+                let history = session.clone_history().await;
+                if history.raw_items() == expected {
+                    break history;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("lazy resume background load timed out");
+
+        assert_eq!(expected, history.raw_items());
     }
 
     #[tokio::test]

@@ -4,7 +4,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
+use anyhow::Result;
 use portable_pty::MasterPty;
+use portable_pty::PtySize;
 use portable_pty::SlavePty;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
@@ -129,6 +131,26 @@ impl ProcessHandle {
                 handle.abort();
             }
         }
+    }
+
+    /// Resize the underlying PTY if this process is PTY-backed.
+    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        let rows = rows.max(1);
+        let cols = cols.max(1);
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let Ok(handles) = self._pty_handles.lock() else {
+            return Err(anyhow::anyhow!("failed to lock PTY handles"));
+        };
+        let Some(pty) = handles.as_ref() else {
+            return Ok(());
+        };
+        pty._master.resize(size)?;
+        Ok(())
     }
 }
 

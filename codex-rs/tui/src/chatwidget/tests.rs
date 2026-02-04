@@ -879,6 +879,7 @@ async fn make_chatwidget_manual(
         prompt_suggestion_history_depth: None,
         prompt_suggestions_intent: false,
         background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
+        terminal_size: None,
         agent_turn_running: false,
         mcp_startup_status: None,
         pending_mcp_list_output: false,

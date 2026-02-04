@@ -1234,6 +1234,8 @@ impl App {
                     self.chat_widget.handle_paste(pasted);
                 }
                 TuiEvent::Draw => {
+                    self.chat_widget
+                        .update_terminal_size(tui.terminal.last_known_screen_size);
                     if self.backtrack_render_pending {
                         self.backtrack_render_pending = false;
                         self.render_transcript_once(tui);
@@ -1555,6 +1557,7 @@ impl App {
                     collaboration_mode: None,
                     personality: None,
                     disallowed_tools: None,
+                    terminal_size: None,
                 });
             }
             AppEvent::OpenAppLink {
@@ -1620,6 +1623,7 @@ impl App {
                     collaboration_mode: None,
                     personality: None,
                     disallowed_tools: None,
+                    terminal_size: None,
                 });
 
                 let edit = if let Some(value) = model {
@@ -1660,6 +1664,7 @@ impl App {
                     collaboration_mode: None,
                     personality: None,
                     disallowed_tools: None,
+                    terminal_size: None,
                 });
 
                 let edit = if let Some(value) = effort {
@@ -1904,6 +1909,7 @@ impl App {
                                         summary: None,
                                         collaboration_mode: None,
                                         personality: None,
+                                        terminal_size: None,
                                     },
                                 ));
                                 self.app_event_tx.send(
@@ -1931,6 +1937,7 @@ impl App {
                                         collaboration_mode: None,
                                         personality: None,
                                         disallowed_tools: None,
+                                        terminal_size: None,
                                     },
                                 ));
                                 self.app_event_tx
@@ -2158,6 +2165,7 @@ impl App {
                                 summary: None,
                                 collaboration_mode: None,
                                 personality: None,
+                                terminal_size: None,
                             }));
                     }
                 }
@@ -2196,6 +2204,7 @@ impl App {
                     collaboration_mode: None,
                     personality: None,
                     disallowed_tools: Some(disallowed_tools.clone()),
+                    terminal_size: None,
                 });
 
                 let mut edits = Vec::new();

@@ -71,7 +71,7 @@ For complete documentation of the `Op` and `EventMsg` variants, refer to [protoc
   - `Op::ExecApproval` – Approve or deny code execution
   - `Op::UserInputAnswer` – Provide answers for a `request_user_input` tool call
   - `Op::ListSkills` – Request skills for one or more cwd values (optionally `force_reload`)
-- `Op::UserTurn` and `Op::OverrideTurnContext` accept an optional `personality` override that updates the model’s communication style; `Op::OverrideTurnContext` can also override `disallowed_tools` to update tool availability and `subagent_model`/`subagent_effort` to control spawned subagents
+- `Op::UserTurn` and `Op::OverrideTurnContext` accept an optional `personality` override that updates the model’s communication style; `Op::OverrideTurnContext` can also override `disallowed_tools` to update tool availability, `subagent_model`/`subagent_effort` to control spawned subagents, and `terminal_size` to size PTY-backed commands
 - `EventMsg`
   - `EventMsg::AgentMessage` – Messages from the `Model`
   - `EventMsg::AgentMessageContentDelta` – Streaming assistant text

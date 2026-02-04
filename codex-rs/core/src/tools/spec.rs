@@ -257,6 +257,22 @@ fn create_exec_command_tool(include_prefix_rule: bool) -> ToolSpec {
             },
         ),
         (
+            "rows".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Terminal rows for PTY sessions. Must be paired with `cols`.".to_string(),
+                ),
+            },
+        ),
+        (
+            "cols".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Terminal columns for PTY sessions. Must be paired with `rows`.".to_string(),
+                ),
+            },
+        ),
+        (
             "yield_time_ms".to_string(),
             JsonSchema::Number {
                 description: Some(
@@ -302,6 +318,22 @@ fn create_write_stdin_tool() -> ToolSpec {
             "chars".to_string(),
             JsonSchema::String {
                 description: Some("Bytes to write to stdin (may be empty to poll).".to_string()),
+            },
+        ),
+        (
+            "rows".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Terminal rows for PTY resize. Must be paired with `cols`.".to_string(),
+                ),
+            },
+        ),
+        (
+            "cols".to_string(),
+            JsonSchema::Number {
+                description: Some(
+                    "Terminal columns for PTY resize. Must be paired with `rows`.".to_string(),
+                ),
             },
         ),
         (

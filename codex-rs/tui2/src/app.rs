@@ -688,6 +688,8 @@ impl App {
         event: TuiEvent,
     ) -> Result<AppRunControl> {
         if matches!(&event, TuiEvent::Draw) {
+            self.chat_widget
+                .update_terminal_size(tui.terminal.last_known_screen_size);
             self.handle_scroll_tick(tui);
         }
 
@@ -1695,6 +1697,7 @@ impl App {
                     collaboration_mode: None,
                     personality: None,
                     disallowed_tools: None,
+                    terminal_size: None,
                 });
             }
             AppEvent::StartFileSearch(query) => {
@@ -1868,6 +1871,7 @@ impl App {
                                         collaboration_mode: None,
                                         personality: None,
                                         disallowed_tools: None,
+                                        terminal_size: None,
                                     },
                                 ));
                                 self.app_event_tx

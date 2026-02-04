@@ -15,6 +15,7 @@ use crate::exec::StreamOutput;
 use crate::exec::is_likely_sandbox_denied;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::formatted_truncate_text;
+use anyhow::Result;
 use codex_utils_pty::ExecCommandSession;
 use codex_utils_pty::SpawnedPty;
 
@@ -115,6 +116,10 @@ impl UnifiedExecProcess {
         self.process_handle.terminate();
         self.cancellation_token.cancel();
         self.output_task.abort();
+    }
+
+    pub(super) fn resize(&self, rows: u16, cols: u16) -> Result<()> {
+        self.process_handle.resize(rows, cols)
     }
 
     async fn snapshot_output(&self) -> Vec<Vec<u8>> {

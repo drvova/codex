@@ -119,6 +119,7 @@ async fn permissions_message_added_on_override_change() -> Result<()> {
             collaboration_mode: None,
             personality: None,
             disallowed_tools: None,
+            terminal_size: None,
         })
         .await?;
 
@@ -246,6 +247,7 @@ async fn resume_replays_permissions_messages() -> Result<()> {
             collaboration_mode: None,
             personality: None,
             disallowed_tools: None,
+            terminal_size: None,
         })
         .await?;
 
@@ -334,6 +336,7 @@ async fn resume_and_fork_append_permissions_messages() -> Result<()> {
             collaboration_mode: None,
             personality: None,
             disallowed_tools: None,
+            terminal_size: None,
         })
         .await?;
 

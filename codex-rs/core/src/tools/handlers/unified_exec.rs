@@ -18,6 +18,7 @@ use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::UnifiedExecResponse;
 use crate::unified_exec::WriteStdinRequest;
 use async_trait::async_trait;
+use codex_protocol::protocol::TerminalSize;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,6 +36,10 @@ struct ExecCommandArgs {
     login: bool,
     #[serde(default = "default_tty")]
     tty: bool,
+    #[serde(default)]
+    rows: Option<u16>,
+    #[serde(default)]
+    cols: Option<u16>,
     #[serde(default)]
     interactive: Option<bool>,
     #[serde(default = "default_exec_yield_time_ms")]
@@ -55,6 +60,10 @@ struct WriteStdinArgs {
     session_id: i32,
     #[serde(default)]
     chars: String,
+    #[serde(default)]
+    rows: Option<u16>,
+    #[serde(default)]
+    cols: Option<u16>,
     #[serde(default = "default_write_stdin_yield_time_ms")]
     yield_time_ms: u64,
     #[serde(default)]
@@ -79,6 +88,25 @@ fn default_tty() -> bool {
 
 fn resolve_tty(args: &ExecCommandArgs) -> bool {
     args.interactive.unwrap_or(args.tty)
+}
+
+fn clamp_terminal_size(rows: u16, cols: u16) -> TerminalSize {
+    TerminalSize {
+        rows: rows.max(1),
+        cols: cols.max(1),
+    }
+}
+
+fn resolve_terminal_size(
+    rows: Option<u16>,
+    cols: Option<u16>,
+    fallback: Option<TerminalSize>,
+) -> Option<TerminalSize> {
+    match (rows, cols) {
+        (Some(rows), Some(cols)) => Some(clamp_terminal_size(rows, cols)),
+        (None, None) => fallback.map(|size| clamp_terminal_size(size.rows, size.cols)),
+        _ => None,
+    }
 }
 
 #[async_trait]
@@ -136,6 +164,7 @@ impl ToolHandler for UnifiedExecHandler {
                 let process_id = manager.allocate_process_id().await;
                 let command = get_command(&args, session.user_shell());
                 let tty = resolve_tty(&args);
+                let terminal_size = resolve_terminal_size(args.rows, args.cols, turn.terminal_size);
 
                 let ExecCommandArgs {
                     workdir,
@@ -198,6 +227,7 @@ impl ToolHandler for UnifiedExecHandler {
                             max_output_tokens,
                             workdir,
                             tty,
+                            terminal_size,
                             sandbox_permissions,
                             justification,
                             prefix_rule,
@@ -211,12 +241,14 @@ impl ToolHandler for UnifiedExecHandler {
             }
             "write_stdin" => {
                 let args: WriteStdinArgs = parse_arguments(&arguments)?;
+                let terminal_size = resolve_terminal_size(args.rows, args.cols, None);
                 let response = manager
                     .write_stdin(WriteStdinRequest {
                         process_id: &args.session_id.to_string(),
                         input: &args.chars,
                         yield_time_ms: args.yield_time_ms,
                         max_output_tokens: args.max_output_tokens,
+                        terminal_size,
                     })
                     .await
                     .map_err(|err| {
@@ -385,6 +417,40 @@ mod tests {
         let args: ExecCommandArgs = parse_arguments(json)?;
 
         assert!(!resolve_tty(&args));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_terminal_size_prefers_explicit_rows_cols() -> anyhow::Result<()> {
+        let json = r#"{"cmd": "echo hello", "rows": 0, "cols": 120}"#;
+        let args: ExecCommandArgs = parse_arguments(json)?;
+
+        assert_eq!(
+            resolve_terminal_size(args.rows, args.cols, None),
+            Some(TerminalSize { rows: 1, cols: 120 })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_terminal_size_uses_fallback_when_missing() -> anyhow::Result<()> {
+        let json = r#"{"cmd": "echo hello"}"#;
+        let args: ExecCommandArgs = parse_arguments(json)?;
+        let fallback = TerminalSize { rows: 24, cols: 80 };
+
+        assert_eq!(
+            resolve_terminal_size(args.rows, args.cols, Some(fallback)),
+            Some(fallback)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_terminal_size_ignores_partial_dimensions() -> anyhow::Result<()> {
+        let json = r#"{"cmd": "echo hello", "rows": 24}"#;
+        let args: ExecCommandArgs = parse_arguments(json)?;
+
+        assert_eq!(resolve_terminal_size(args.rows, args.cols, None), None);
         Ok(())
     }
 }

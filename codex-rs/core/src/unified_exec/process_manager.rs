@@ -46,6 +46,7 @@ use crate::unified_exec::process::OutputBuffer;
 use crate::unified_exec::process::OutputHandles;
 use crate::unified_exec::process::UnifiedExecProcess;
 use crate::unified_exec::resolve_max_tokens;
+use codex_protocol::protocol::TerminalSize;
 
 const UNIFIED_EXEC_ENV: [(&str, &str); 10] = [
     ("NO_COLOR", "1"),
@@ -68,6 +69,7 @@ fn apply_unified_exec_env(mut env: HashMap<String, String>) -> HashMap<String, S
 }
 
 struct PreparedProcessHandles {
+    process: Arc<UnifiedExecProcess>,
     writer_tx: mpsc::Sender<Vec<u8>>,
     output_buffer: OutputBuffer,
     output_notify: Arc<Notify>,
@@ -245,6 +247,7 @@ impl UnifiedExecProcessManager {
         let process_id = request.process_id.to_string();
 
         let PreparedProcessHandles {
+            process,
             writer_tx,
             output_buffer,
             output_notify,
@@ -254,6 +257,16 @@ impl UnifiedExecProcessManager {
             tty,
             ..
         } = self.prepare_process_handles(process_id.as_str()).await?;
+
+        if let Some(terminal_size) = request.terminal_size
+            && let Err(err) = process.resize(terminal_size.rows, terminal_size.cols)
+        {
+            tracing::warn!(
+                process_id = %process_id,
+                error = %err,
+                "failed to resize unified exec session"
+            );
+        }
 
         if !request.input.is_empty() {
             if !tty {
@@ -327,6 +340,28 @@ impl UnifiedExecProcessManager {
         Ok(response)
     }
 
+    pub(crate) async fn resize_ttys(&self, size: TerminalSize) {
+        let processes = {
+            let store = self.process_store.lock().await;
+            store
+                .processes
+                .values()
+                .filter(|entry| entry.tty)
+                .map(|entry| (entry.process_id.clone(), Arc::clone(&entry.process)))
+                .collect::<Vec<_>>()
+        };
+
+        for (process_id, process) in processes {
+            if let Err(err) = process.resize(size.rows, size.cols) {
+                tracing::warn!(
+                    process_id = %process_id,
+                    error = %err,
+                    "failed to resize unified exec session"
+                );
+            }
+        }
+    }
+
     async fn refresh_process_state(&self, process_id: &str) -> ProcessStatus {
         let mut store = self.process_store.lock().await;
         let Some(entry) = store.processes.get(process_id) else {
@@ -373,6 +408,7 @@ impl UnifiedExecProcessManager {
         } = entry.process.output_handles();
 
         Ok(PreparedProcessHandles {
+            process: Arc::clone(&entry.process),
             writer_tx: entry.process.writer_sender(),
             output_buffer,
             output_notify,
@@ -447,6 +483,7 @@ impl UnifiedExecProcessManager {
         &self,
         env: &ExecEnv,
         tty: bool,
+        terminal_size: Option<TerminalSize>,
     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
         let (program, args) = env
             .command
@@ -460,6 +497,7 @@ impl UnifiedExecProcessManager {
                 env.cwd.as_path(),
                 &env.env,
                 &env.arg0,
+                terminal_size.map(|size| (size.rows, size.cols)),
             )
             .await
         } else {
@@ -508,6 +546,7 @@ impl UnifiedExecProcessManager {
             cwd,
             env,
             request.tty,
+            request.terminal_size,
             request.sandbox_permissions,
             request.justification.clone(),
             exec_approval_requirement,

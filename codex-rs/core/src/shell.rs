@@ -125,13 +125,12 @@ fn resolve_user_shell_path(
     shell_env: Option<PathBuf>,
     passwd_shell: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    if is_wsl {
-        if let Some(shell_env) = shell_env
-            && detect_shell_type(&shell_env).is_some()
-            && file_exists(&shell_env).is_some()
-        {
-            return Some(shell_env);
-        }
+    if is_wsl
+        && let Some(shell_env) = shell_env
+        && detect_shell_type(&shell_env).is_some()
+        && file_exists(&shell_env).is_some()
+    {
+        return Some(shell_env);
     }
 
     passwd_shell

@@ -28,6 +28,7 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcess;
 use crate::unified_exec::UnifiedExecProcessManager;
 use codex_protocol::protocol::ReviewDecision;
+use codex_protocol::protocol::TerminalSize;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,6 +39,7 @@ pub struct UnifiedExecRequest {
     pub cwd: PathBuf,
     pub env: HashMap<String, String>,
     pub tty: bool,
+    pub terminal_size: Option<TerminalSize>,
     pub sandbox_permissions: SandboxPermissions,
     pub justification: Option<String>,
     pub exec_approval_requirement: ExecApprovalRequirement,
@@ -61,6 +63,7 @@ impl UnifiedExecRequest {
         cwd: PathBuf,
         env: HashMap<String, String>,
         tty: bool,
+        terminal_size: Option<TerminalSize>,
         sandbox_permissions: SandboxPermissions,
         justification: Option<String>,
         exec_approval_requirement: ExecApprovalRequirement,
@@ -70,6 +73,7 @@ impl UnifiedExecRequest {
             cwd,
             env,
             tty,
+            terminal_size,
             sandbox_permissions,
             justification,
             exec_approval_requirement,
@@ -194,7 +198,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecProcess> for UnifiedExecRunt
             .env_for(spec)
             .map_err(|err| ToolError::Codex(err.into()))?;
         self.manager
-            .open_session_with_exec_env(&exec_env, req.tty)
+            .open_session_with_exec_env(&exec_env, req.tty, req.terminal_size)
             .await
             .map_err(|err| match err {
                 UnifiedExecError::SandboxDenied { output, .. } => {

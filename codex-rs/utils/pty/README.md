@@ -4,7 +4,7 @@ Lightweight helpers for spawning interactive processes either under a PTY (pseud
 
 ## API surface
 
-- `spawn_pty_process(program, args, cwd, env, arg0)` → `SpawnedProcess`
+- `spawn_pty_process(program, args, cwd, env, arg0, size)` → `SpawnedProcess` (`size` is an optional `(rows, cols)` tuple; if `None`, a PTY is only created when a terminal size can be detected or `LINES`/`COLUMNS` are set)
 - `spawn_pipe_process(program, args, cwd, env, arg0)` → `SpawnedProcess`
 - `spawn_pipe_process_no_stdin(program, args, cwd, env, arg0)` → `SpawnedProcess`
 - `conpty_supported()` → `bool` (Windows only; always true elsewhere)
@@ -29,6 +29,7 @@ let spawned = spawn_pty_process(
     Path::new("."),
     &env_map,
     &None,
+    Some((24, 80)),
 ).await?;
 
 let writer = spawned.session.writer_sender();

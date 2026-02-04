@@ -6,6 +6,37 @@ use pretty_assertions::assert_eq;
 use crate::spawn_pipe_process;
 use crate::spawn_pty_process;
 
+fn is_permission_denied(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            return io_err.kind() == std::io::ErrorKind::PermissionDenied;
+        }
+        let message = cause.to_string();
+        message.contains("Permission denied")
+            || message.contains("EACCES")
+            || message.contains("EPERM")
+    })
+}
+
+async fn spawn_pty_or_skip(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    env: &HashMap<String, String>,
+    arg0: &Option<String>,
+    size: Option<(u16, u16)>,
+    test_name: &str,
+) -> anyhow::Result<Option<crate::SpawnedProcess>> {
+    match spawn_pty_process(program, args, cwd, env, arg0, size).await {
+        Ok(spawned) => Ok(Some(spawned)),
+        Err(err) if is_permission_denied(&err) => {
+            eprintln!("openpty not permitted; skipping {test_name}");
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn find_python() -> Option<String> {
     for candidate in ["python3", "python"] {
         if let Ok(output) = std::process::Command::new(candidate)
@@ -101,7 +132,19 @@ async fn pty_python_repl_emits_output_and_exits() -> anyhow::Result<()> {
     };
 
     let env_map: HashMap<String, String> = std::env::vars().collect();
-    let spawned = spawn_pty_process(&python, &[], Path::new("."), &env_map, &None).await?;
+    let Some(spawned) = spawn_pty_or_skip(
+        &python,
+        &[],
+        Path::new("."),
+        &env_map,
+        &None,
+        Some((24, 80)),
+        "pty_python_repl_emits_output_and_exits",
+    )
+    .await?
+    else {
+        return Ok(());
+    };
     let writer = spawned.session.writer_sender();
     let newline = if cfg!(windows) { "\r\n" } else { "\n" };
     writer
@@ -204,7 +247,19 @@ async fn pipe_and_pty_share_interface() -> anyhow::Result<()> {
 
     let pipe =
         spawn_pipe_process(&pipe_program, &pipe_args, Path::new("."), &env_map, &None).await?;
-    let pty = spawn_pty_process(&pty_program, &pty_args, Path::new("."), &env_map, &None).await?;
+    let Some(pty) = spawn_pty_or_skip(
+        &pty_program,
+        &pty_args,
+        Path::new("."),
+        &env_map,
+        &None,
+        Some((24, 80)),
+        "pipe_and_pty_share_interface",
+    )
+    .await?
+    else {
+        return Ok(());
+    };
 
     let timeout_ms = if cfg!(windows) { 10_000 } else { 3_000 };
     let (pipe_out, pipe_code) =

@@ -78,6 +78,7 @@ use codex_core::protocol::ReviewTarget;
 use codex_core::protocol::SkillsListEntry;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::TerminalInteractionEvent;
+use codex_core::protocol::TerminalSize;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
 use codex_core::protocol::TurnAbortReason;
@@ -108,6 +109,7 @@ use crossterm::event::KeyModifiers;
 use rand::Rng;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::layout::Size;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -401,6 +403,7 @@ pub(crate) struct ChatWidget {
     /// True when the user explicitly opened the prompt suggestions view.
     prompt_suggestions_intent: bool,
     background_terminals_state: Arc<Mutex<BackgroundTerminalsState>>,
+    terminal_size: Option<TerminalSize>,
     /// Tracks whether codex-core currently considers an agent turn to be in progress.
     ///
     /// This is kept separate from `mcp_startup_status` so that MCP startup progress (or completion)
@@ -566,6 +569,7 @@ impl ChatWidget {
             .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.set_skills(None);
         self.conversation_id = Some(event.session_id);
+        self.terminal_size = None;
         self.current_rollout_path = Some(event.rollout_path.clone());
         let initial_messages = event.initial_messages.clone();
         let model_for_header = event.model.clone();
@@ -600,6 +604,37 @@ impl ChatWidget {
         if !self.suppress_session_configured_redraw {
             self.request_redraw();
         }
+    }
+
+    pub(crate) fn update_terminal_size(&mut self, size: Size) {
+        let terminal_size = TerminalSize {
+            rows: size.height.max(1),
+            cols: size.width.max(1),
+        };
+        if !self.is_session_configured() {
+            return;
+        }
+        if self.terminal_size == Some(terminal_size) {
+            return;
+        }
+        self.terminal_size = Some(terminal_size);
+        self.submit_op(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: None,
+            sandbox_policy: None,
+            windows_sandbox_level: None,
+            model: None,
+            subagent_model: None,
+            subagent_effort: None,
+            effort: None,
+            summary: None,
+            max_output_tokens: None,
+            history_depth: None,
+            collaboration_mode: None,
+            personality: None,
+            disallowed_tools: None,
+            terminal_size: Some(terminal_size),
+        });
     }
 
     fn set_skills(&mut self, skills: Option<Vec<SkillMetadata>>) {
@@ -1710,6 +1745,7 @@ impl ChatWidget {
             prompt_suggestion_history_depth: None,
             prompt_suggestions_intent: false,
             background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
+            terminal_size: None,
             agent_turn_running: false,
             mcp_startup_status: None,
             pending_mcp_list_output: false,
@@ -1847,6 +1883,7 @@ impl ChatWidget {
             prompt_suggestion_history_depth: None,
             prompt_suggestions_intent: false,
             background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
+            terminal_size: None,
             agent_turn_running: false,
             mcp_startup_status: None,
             pending_mcp_list_output: false,
@@ -2827,6 +2864,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
                 disallowed_tools: None,
+                terminal_size: None,
             }));
             tx.send(AppEvent::UpdateModel(switch_model.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(Some(default_effort)));
@@ -3111,6 +3149,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
                 disallowed_tools: None,
+                terminal_size: None,
             }));
             tx.send(AppEvent::UpdateModel(model_for_action.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort_for_action));
@@ -3289,6 +3328,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
                 disallowed_tools: None,
+                terminal_size: None,
             }));
         self.app_event_tx.send(AppEvent::UpdateModel(model.clone()));
         self.app_event_tx
@@ -3460,6 +3500,7 @@ impl ChatWidget {
                 collaboration_mode: None,
                 personality: None,
                 disallowed_tools: None,
+                terminal_size: None,
             }));
             tx.send(AppEvent::UpdateAskForApprovalPolicy(approval));
             tx.send(AppEvent::UpdateSandboxPolicy(sandbox_clone));
@@ -4025,6 +4066,7 @@ impl ChatWidget {
                     collaboration_mode: Some(self.current_collaboration_mode.clone()),
                     personality: None,
                     disallowed_tools: None,
+                    terminal_size: None,
                 });
             }
             self.refresh_model_display();
@@ -4229,6 +4271,7 @@ impl ChatWidget {
                 collaboration_mode: Some(effective),
                 personality: None,
                 disallowed_tools: None,
+                terminal_size: None,
             });
         }
         self.refresh_model_display();

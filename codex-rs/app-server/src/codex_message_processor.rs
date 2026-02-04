@@ -4157,6 +4157,7 @@ impl CodexMessageProcessor {
                     collaboration_mode: params.collaboration_mode,
                     personality: params.personality,
                     disallowed_tools: None,
+                    terminal_size: None,
                 })
                 .await;
         }

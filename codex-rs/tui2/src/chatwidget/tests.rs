@@ -554,6 +554,7 @@ async fn make_chatwidget_manual(
         feedback: codex_feedback::CodexFeedback::new(),
         current_rollout_path: None,
         background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
+        terminal_size: None,
         last_completed_turn_id: None,
     };
     (widget, rx, op_rx)
