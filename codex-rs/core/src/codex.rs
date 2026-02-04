@@ -62,6 +62,7 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::TerminalSize;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -361,6 +362,7 @@ impl Codex {
             model_reasoning_summary: config.model_reasoning_summary,
             max_output_tokens: None,
             history_depth: None,
+            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
             personality: config.personality,
@@ -512,6 +514,7 @@ pub(crate) struct TurnContext {
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) truncation_policy: TruncationPolicy,
     pub(crate) dynamic_tools: Vec<DynamicToolSpec>,
+    pub(crate) terminal_size: Option<TerminalSize>,
 }
 impl TurnContext {
     pub(crate) fn resolve_path(&self, path: Option<String>) -> PathBuf {
@@ -536,6 +539,7 @@ pub(crate) struct SessionConfiguration {
     model_reasoning_summary: ReasoningSummaryConfig,
     max_output_tokens: Option<u32>,
     history_depth: Option<u32>,
+    terminal_size: Option<TerminalSize>,
 
     /// Developer instructions that supplement the base instructions.
     developer_instructions: Option<String>,
@@ -629,6 +633,9 @@ impl SessionConfiguration {
         if let Some(history_depth) = updates.history_depth {
             next_configuration.history_depth = Self::normalize_history_depth(history_depth);
         }
+        if let Some(terminal_size) = updates.terminal_size {
+            next_configuration.terminal_size = Some(terminal_size);
+        }
         if let Some(disallowed_tools) = updates.disallowed_tools.clone() {
             let mut updated_config = (*next_configuration.original_config_do_not_use).clone();
             updated_config.disallowed_tools = disallowed_tools;
@@ -663,6 +670,7 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) subagent_effort: Option<Option<ReasoningEffortConfig>>,
     pub(crate) max_output_tokens: Option<u32>,
     pub(crate) history_depth: Option<u32>,
+    pub(crate) terminal_size: Option<TerminalSize>,
     pub(crate) turn_max_output_tokens: Option<u32>,
     pub(crate) turn_history_depth: Option<u32>,
 }
@@ -767,6 +775,7 @@ impl Session {
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
             dynamic_tools: session_configuration.dynamic_tools.clone(),
+            terminal_size: session_configuration.terminal_size,
         }
     }
 
@@ -1219,9 +1228,10 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
+        let terminal_size = updates.terminal_size;
         let mut state = self.state.lock().await;
 
-        match state.session_configuration.apply(&updates) {
+        let result = match state.session_configuration.apply(&updates) {
             Ok(updated) => {
                 state.session_configuration = updated;
                 Ok(())
@@ -1230,7 +1240,17 @@ impl Session {
                 warn!("rejected session settings update: {err}");
                 Err(err)
             }
+        };
+        drop(state);
+
+        if let (Ok(_), Some(terminal_size)) = (result.as_ref(), terminal_size) {
+            self.services
+                .unified_exec_manager
+                .resize_ttys(terminal_size)
+                .await;
         }
+
+        result
     }
 
     pub(crate) async fn new_turn_with_sub_id(
@@ -1238,6 +1258,7 @@ impl Session {
         sub_id: String,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<Arc<TurnContext>> {
+        let terminal_size = updates.terminal_size;
         let (session_configuration, sandbox_policy_changed) = {
             let mut state = self.state.lock().await;
             match state.session_configuration.clone().apply(&updates) {
@@ -1262,6 +1283,12 @@ impl Session {
             }
         };
         let overrides = updates.turn_overrides();
+        if let Some(terminal_size) = terminal_size {
+            self.services
+                .unified_exec_manager
+                .resize_ttys(terminal_size)
+                .await;
+        }
 
         Ok(self
             .new_turn_from_configuration(
@@ -2036,11 +2063,6 @@ impl Session {
         self.features.clone()
     }
 
-    pub(crate) async fn collaboration_mode(&self) -> CollaborationMode {
-        let state = self.state.lock().await;
-        state.session_configuration.collaboration_mode.clone()
-    }
-
     async fn send_raw_response_items(&self, turn_context: &TurnContext, items: &[ResponseItem]) {
         for item in items {
             self.send_event(
@@ -2596,6 +2618,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 collaboration_mode,
                 personality,
                 disallowed_tools,
+                terminal_size,
             } => {
                 let collaboration_mode = if let Some(collab_mode) = collaboration_mode {
                     collab_mode
@@ -2623,6 +2646,7 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         disallowed_tools,
                         subagent_model,
                         subagent_effort,
+                        terminal_size,
                         ..Default::default()
                     },
                 )
@@ -3440,6 +3464,7 @@ async fn spawn_review_thread(
         codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
+        terminal_size: parent_turn_context.terminal_size,
         truncation_policy: model_info.truncation_policy.into(),
     };
 
@@ -5681,6 +5706,7 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             max_output_tokens: None,
             history_depth: None,
+            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
@@ -5766,6 +5792,7 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             max_output_tokens: None,
             history_depth: None,
+            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
@@ -6038,6 +6065,7 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             max_output_tokens: None,
             history_depth: None,
+            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
@@ -6160,6 +6188,7 @@ mod tests {
             model_reasoning_summary: config.model_reasoning_summary,
             max_output_tokens: None,
             history_depth: None,
+            terminal_size: None,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
