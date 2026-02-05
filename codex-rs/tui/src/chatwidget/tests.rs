@@ -875,12 +875,11 @@ async fn make_chatwidget_manual(
         last_unified_wait: None,
         unified_exec_wait_streak: None,
         unified_exec_processes: Vec::new(),
+        background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
         task_complete_pending: false,
         latest_prompt_suggestion: None,
         prompt_suggestion_history_depth: None,
         prompt_suggestions_intent: false,
-        background_terminals_state: Arc::new(Mutex::new(BackgroundTerminalsState::new())),
-        terminal_size: None,
         agent_turn_running: false,
         mcp_startup_status: None,
         pending_mcp_list_output: false,
@@ -4225,14 +4224,7 @@ async fn interrupt_clears_background_terminals() {
 
     begin_unified_exec_startup(&mut chat, "call-1", "process-1", "sleep 5");
     begin_unified_exec_startup(&mut chat, "call-2", "process-2", "sleep 6");
-    assert_eq!(
-        chat.background_terminals_state
-            .lock()
-            .expect("background terminal state")
-            .list_items()
-            .len(),
-        2
-    );
+    assert_eq!(chat.unified_exec_processes.len(), 2);
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
@@ -4241,14 +4233,7 @@ async fn interrupt_clears_background_terminals() {
         }),
     });
 
-    assert_eq!(
-        chat.background_terminals_state
-            .lock()
-            .expect("background terminal state")
-            .list_items()
-            .len(),
-        0
-    );
+    assert_eq!(chat.unified_exec_processes.len(), 0);
 
     let _ = drain_insert_history(&mut rx);
 }
@@ -4292,14 +4277,7 @@ async fn turn_aborted_clears_background_terminals() {
 
     begin_unified_exec_startup(&mut chat, "call-1", "process-1", "sleep 5");
     begin_unified_exec_startup(&mut chat, "call-2", "process-2", "sleep 6");
-    assert_eq!(
-        chat.background_terminals_state
-            .lock()
-            .expect("background terminal state")
-            .list_items()
-            .len(),
-        2
-    );
+    assert_eq!(chat.unified_exec_processes.len(), 2);
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
@@ -4308,14 +4286,7 @@ async fn turn_aborted_clears_background_terminals() {
         }),
     });
 
-    assert_eq!(
-        chat.background_terminals_state
-            .lock()
-            .expect("background terminal state")
-            .list_items()
-            .len(),
-        0
-    );
+    assert_eq!(chat.unified_exec_processes.len(), 0);
 
     let _ = drain_insert_history(&mut rx);
 }
@@ -4326,14 +4297,7 @@ async fn turn_complete_keeps_background_terminals() {
 
     begin_unified_exec_startup(&mut chat, "call-1", "process-1", "sleep 5");
     begin_unified_exec_startup(&mut chat, "call-2", "process-2", "sleep 6");
-    assert_eq!(
-        chat.background_terminals_state
-            .lock()
-            .expect("background terminal state")
-            .list_items()
-            .len(),
-        2
-    );
+    assert_eq!(chat.unified_exec_processes.len(), 2);
 
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
@@ -4342,14 +4306,7 @@ async fn turn_complete_keeps_background_terminals() {
         }),
     });
 
-    assert_eq!(
-        chat.background_terminals_state
-            .lock()
-            .expect("background terminal state")
-            .list_items()
-            .len(),
-        2
-    );
+    assert_eq!(chat.unified_exec_processes.len(), 2);
 
     let _ = drain_insert_history(&mut rx);
 }

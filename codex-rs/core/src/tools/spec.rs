@@ -33,7 +33,6 @@ pub(crate) struct ToolsConfig {
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_mode: Option<WebSearchMode>,
     pub collab_tools: bool,
-    pub collaboration_modes_tools: bool,
     pub request_rule_enabled: bool,
     pub experimental_supported_tools: Vec<String>,
     pub mcp_search_enabled: bool,
@@ -57,7 +56,6 @@ impl ToolsConfig {
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_collab_tools = features.enabled(Feature::Collab);
-        let include_collaboration_modes_tools = features.enabled(Feature::CollaborationModes);
         let request_rule_enabled = features.enabled(Feature::RequestRule);
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
@@ -102,7 +100,6 @@ impl ToolsConfig {
             apply_patch_tool_type,
             web_search_mode: *web_search_mode,
             collab_tools: include_collab_tools,
-            collaboration_modes_tools: include_collaboration_modes_tools,
             request_rule_enabled,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             mcp_search_enabled,
@@ -1517,7 +1514,7 @@ pub(crate) fn build_specs(
     builder.push_spec(PLAN_TOOL.clone());
     builder.register_handler("update_plan", plan_handler);
 
-    if config.collaboration_modes_tools && config.request_user_input_enabled {
+    if config.request_user_input_enabled {
         builder.push_spec_with_parallel_support(create_request_user_input_tool(), true);
         builder.register_handler("request_user_input", request_user_input_handler);
     }
@@ -1866,7 +1863,7 @@ mod tests {
     }
 
     #[test]
-    fn request_user_input_requires_collaboration_modes_feature() {
+    fn request_user_input_available_without_collaboration_modes_feature() {
         let config = test_config();
         let model_info = ModelsManager::construct_model_info_offline("gpt-5-codex", &config);
         let mut features = Features::with_defaults();
@@ -1878,10 +1875,7 @@ mod tests {
             disallowed_tools: &config.disallowed_tools,
         });
         let (tools, _) = build_specs(&tools_config, None, &[]).build();
-        assert!(
-            !tools.iter().any(|t| t.spec.name() == "request_user_input"),
-            "request_user_input should be disabled when collaboration_modes feature is off"
-        );
+        assert_contains_tool_names(&tools, &["request_user_input"]);
 
         features.enable(Feature::CollaborationModes);
         let tools_config = ToolsConfig::new(&ToolsConfigParams {

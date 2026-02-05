@@ -53,6 +53,7 @@ use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::format_allow_prefixes;
 use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -62,6 +63,7 @@ use codex_protocol::protocol::ReviewRequest;
 use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::TerminalSize;
 use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::TurnStartedEvent;
@@ -95,6 +97,7 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::ModelProviderInfo;
 use crate::client::ModelClient;
@@ -121,11 +124,14 @@ use crate::feedback_tags;
 use crate::git_info::get_git_repo_root;
 use crate::instructions::UserInstructions;
 use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp::ExplicitMcpToolCall;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp::effective_mcp_servers;
+use crate::mcp::extract_explicit_mcp_tool_calls;
 use crate::mcp::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp::with_codex_apps_mcp;
 use crate::mcp_connection_manager::McpConnectionManager;
+use crate::mcp_tool_call::handle_mcp_tool_call;
 use crate::mentions::build_connector_slug_counts;
 use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_paths;
@@ -358,6 +364,12 @@ impl Codex {
             developer_instructions: config.developer_instructions.clone(),
             user_instructions,
             personality: config.personality,
+            max_output_tokens: None,
+            history_depth: None,
+            subagent_model: config.subagent_model.clone(),
+            subagent_effort: config.subagent_reasoning_effort,
+            disallowed_tools: config.disallowed_tools.clone(),
+            terminal_size: None,
             base_instructions,
             compact_prompt: config.compact_prompt.clone(),
             approval_policy: config.approval_policy.clone(),
@@ -500,6 +512,9 @@ pub(crate) struct TurnContext {
     pub(crate) tools_config: ToolsConfig,
     pub(crate) ghost_snapshot: GhostSnapshotConfig,
     pub(crate) final_output_json_schema: Option<Value>,
+    pub(crate) max_output_tokens: Option<u32>,
+    pub(crate) history_depth: Option<u32>,
+    pub(crate) terminal_size: Option<TerminalSize>,
     pub(crate) codex_linux_sandbox_exe: Option<PathBuf>,
     pub(crate) tool_call_gate: Arc<ReadinessFlag>,
     pub(crate) truncation_policy: TruncationPolicy,
@@ -569,6 +584,22 @@ pub(crate) struct SessionConfiguration {
     /// Personality preference for the model.
     personality: Option<Personality>,
 
+    /// Optional cap on model output tokens.
+    max_output_tokens: Option<u32>,
+    /// Optional limit on how many recent user turns to include in context.
+    history_depth: Option<u32>,
+
+    /// Optional model override for spawned subagents.
+    subagent_model: Option<String>,
+    /// Optional reasoning effort override for spawned subagents.
+    subagent_effort: Option<ReasoningEffortConfig>,
+
+    /// Tool names excluded from the model tool list.
+    disallowed_tools: Vec<String>,
+
+    /// Preferred terminal size for tool calls.
+    terminal_size: Option<TerminalSize>,
+
     /// Base instructions for the session.
     base_instructions: String,
 
@@ -627,8 +658,20 @@ impl SessionConfiguration {
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = summary;
         }
+        if let Some(max_output_tokens) = updates.max_output_tokens {
+            next_configuration.max_output_tokens = max_output_tokens;
+        }
+        if let Some(history_depth) = updates.history_depth {
+            next_configuration.history_depth = history_depth;
+        }
         if let Some(personality) = updates.personality {
             next_configuration.personality = Some(personality);
+        }
+        if let Some(subagent_model) = updates.subagent_model.clone() {
+            next_configuration.subagent_model = subagent_model;
+        }
+        if let Some(subagent_effort) = updates.subagent_effort.clone() {
+            next_configuration.subagent_effort = subagent_effort;
         }
         if let Some(approval_policy) = updates.approval_policy {
             next_configuration.approval_policy.set(approval_policy)?;
@@ -642,6 +685,12 @@ impl SessionConfiguration {
         if let Some(cwd) = updates.cwd.clone() {
             next_configuration.cwd = cwd;
         }
+        if let Some(disallowed_tools) = updates.disallowed_tools.clone() {
+            next_configuration.disallowed_tools = disallowed_tools;
+        }
+        if let Some(terminal_size) = updates.terminal_size {
+            next_configuration.terminal_size = Some(terminal_size);
+        }
         Ok(next_configuration)
     }
 }
@@ -654,8 +703,14 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
+    pub(crate) max_output_tokens: Option<Option<u32>>,
+    pub(crate) history_depth: Option<Option<u32>>,
     pub(crate) final_output_json_schema: Option<Option<Value>>,
     pub(crate) personality: Option<Personality>,
+    pub(crate) subagent_model: Option<Option<String>>,
+    pub(crate) subagent_effort: Option<Option<ReasoningEffortConfig>>,
+    pub(crate) disallowed_tools: Option<Vec<String>>,
+    pub(crate) terminal_size: Option<TerminalSize>,
 }
 
 impl Session {
@@ -668,6 +723,9 @@ impl Session {
             session_configuration.collaboration_mode.reasoning_effort();
         per_turn_config.model_reasoning_summary = session_configuration.model_reasoning_summary;
         per_turn_config.personality = session_configuration.personality;
+        per_turn_config.subagent_model = session_configuration.subagent_model.clone();
+        per_turn_config.subagent_reasoning_effort = session_configuration.subagent_effort;
+        per_turn_config.disallowed_tools = session_configuration.disallowed_tools.clone();
         per_turn_config.web_search_mode = Some(resolve_web_search_mode_for_turn(
             per_turn_config.web_search_mode,
             session_configuration.provider.is_azure_responses_endpoint(),
@@ -716,6 +774,7 @@ impl Session {
             model_info: &model_info,
             features: &per_turn_config.features,
             web_search_mode: per_turn_config.web_search_mode,
+            disallowed_tools: &per_turn_config.disallowed_tools,
         });
 
         let cwd = session_configuration.cwd.clone();
@@ -735,6 +794,9 @@ impl Session {
             tools_config,
             ghost_snapshot: per_turn_config.ghost_snapshot.clone(),
             final_output_json_schema: None,
+            max_output_tokens: session_configuration.max_output_tokens,
+            history_depth: session_configuration.history_depth,
+            terminal_size: session_configuration.terminal_size,
             codex_linux_sandbox_exe: per_turn_config.codex_linux_sandbox_exe.clone(),
             tool_call_gate: Arc::new(ReadinessFlag::new()),
             truncation_policy: model_info.truncation_policy.into(),
@@ -1090,6 +1152,7 @@ impl Session {
                 {
                     let mut state = self.state.lock().await;
                     state.initial_context_seeded = false;
+                    state.pending_resumed_rollout = Some(resumed_history.rollout_path.clone());
                 }
 
                 // If resuming, warn when the last recorded model differs from the current one.
@@ -1185,9 +1248,9 @@ impl Session {
         &self,
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
+        let terminal_size = updates.terminal_size;
         let mut state = self.state.lock().await;
-
-        match state.session_configuration.apply(&updates) {
+        let result = match state.session_configuration.apply(&updates) {
             Ok(updated) => {
                 state.session_configuration = updated;
                 Ok(())
@@ -1196,7 +1259,16 @@ impl Session {
                 warn!("rejected session settings update: {err}");
                 Err(err)
             }
+        };
+        drop(state);
+
+        if result.is_ok()
+            && let Some(size) = terminal_size
+        {
+            self.services.unified_exec_manager.resize_ttys(size).await;
         }
+
+        result
     }
 
     pub(crate) async fn new_turn_with_sub_id(
@@ -1862,12 +1934,20 @@ impl Session {
     }
 
     pub(crate) async fn seed_initial_context_if_needed(&self, turn_context: &TurnContext) {
-        {
+        let pending_resumed_rollout = {
             let mut state = self.state.lock().await;
             if state.initial_context_seeded {
                 return;
             }
             state.initial_context_seeded = true;
+            state.pending_resumed_rollout.take()
+        };
+
+        if let Some(path) = pending_resumed_rollout {
+            debug!(
+                "seeding initial context for resumed rollout {}",
+                path.display()
+            );
         }
 
         let initial_context = self.build_initial_context(turn_context).await;
@@ -2444,10 +2524,16 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                 sandbox_policy,
                 windows_sandbox_level,
                 model,
+                subagent_model,
+                subagent_effort,
                 effort,
                 summary,
+                max_output_tokens,
+                history_depth,
                 collaboration_mode,
                 personality,
+                disallowed_tools,
+                terminal_size,
             } => {
                 let collaboration_mode = if let Some(collab_mode) = collaboration_mode {
                     collab_mode
@@ -2469,11 +2555,20 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
                         windows_sandbox_level,
                         collaboration_mode: Some(collaboration_mode),
                         reasoning_summary: summary,
+                        max_output_tokens: max_output_tokens.map(Some),
+                        history_depth: history_depth.map(Some),
                         personality,
+                        subagent_model,
+                        subagent_effort,
+                        disallowed_tools,
+                        terminal_size,
                         ..Default::default()
                     },
                 )
                 .await;
+            }
+            Op::TerminateUnifiedExec { process_id } => {
+                handlers::terminate_unified_exec(&sess, sub.id.clone(), process_id).await;
             }
             Op::UserInput { .. } | Op::UserTurn { .. } => {
                 handlers::user_input_or_turn(&sess, sub.id.clone(), sub.op, &mut previous_context)
@@ -2625,6 +2720,23 @@ mod handlers {
         sess.interrupt_task().await;
     }
 
+    pub async fn terminate_unified_exec(sess: &Arc<Session>, sub_id: String, process_id: String) {
+        if let Err(err) = sess
+            .services
+            .unified_exec_manager
+            .terminate_process(&process_id)
+            .await
+        {
+            sess.send_event_raw(Event {
+                id: sub_id,
+                msg: EventMsg::Warning(WarningEvent {
+                    message: format!("Failed to terminate background terminal {process_id}: {err}"),
+                }),
+            })
+            .await;
+        }
+    }
+
     pub async fn override_turn_context(
         sess: &Session,
         sub_id: String,
@@ -2656,6 +2768,8 @@ mod handlers {
                 model,
                 effort,
                 summary,
+                max_output_tokens,
+                history_depth,
                 final_output_json_schema,
                 items,
                 collaboration_mode,
@@ -2680,8 +2794,14 @@ mod handlers {
                         windows_sandbox_level: None,
                         collaboration_mode,
                         reasoning_summary: Some(summary),
+                        max_output_tokens: Some(max_output_tokens),
+                        history_depth: Some(history_depth),
                         final_output_json_schema: Some(final_output_json_schema),
                         personality,
+                        subagent_model: None,
+                        subagent_effort: None,
+                        disallowed_tools: None,
+                        terminal_size: None,
                     },
                 )
             }
@@ -3259,10 +3379,12 @@ async fn spawn_review_thread(
         .disable(crate::features::Feature::WebSearchRequest)
         .disable(crate::features::Feature::WebSearchCached);
     let review_web_search_mode = WebSearchMode::Disabled;
+    let parent_config = parent_turn_context.client.config();
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_info: &review_model_info,
         features: &review_features,
         web_search_mode: Some(review_web_search_mode),
+        disallowed_tools: &parent_config.disallowed_tools,
     });
 
     let review_prompt = resolved.prompt.clone();
@@ -3275,6 +3397,7 @@ async fn spawn_review_thread(
     per_turn_config.model = Some(model.clone());
     per_turn_config.features = review_features.clone();
     per_turn_config.web_search_mode = Some(review_web_search_mode);
+    per_turn_config.disallowed_tools = parent_config.disallowed_tools.clone();
 
     let otel_manager = parent_turn_context
         .client
@@ -3311,6 +3434,9 @@ async fn spawn_review_thread(
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         cwd: parent_turn_context.cwd.clone(),
         final_output_json_schema: None,
+        max_output_tokens: parent_turn_context.max_output_tokens,
+        history_depth: parent_turn_context.history_depth,
+        terminal_size: parent_turn_context.terminal_size,
         codex_linux_sandbox_exe: parent_turn_context.codex_linux_sandbox_exe.clone(),
         tool_call_gate: Arc::new(ReadinessFlag::new()),
         dynamic_tools: parent_turn_context.dynamic_tools.clone(),
@@ -3503,7 +3629,16 @@ pub(crate) async fn run_turn(
             .await;
     }
 
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input.clone());
+    let (mut cleaned_input, explicit_mcp_tool_calls) =
+        extract_explicit_mcp_tool_calls_from_input(&input);
+    if cleaned_input.is_empty() && !explicit_mcp_tool_calls.is_empty() {
+        cleaned_input.push(UserInput::Text {
+            text: " ".to_string(),
+            text_elements: Vec::new(),
+        });
+    }
+
+    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(cleaned_input);
     let response_item: ResponseItem = initial_input_for_turn.clone().into();
     sess.record_user_prompt_and_emit_turn_item(turn_context.as_ref(), &input, response_item)
         .await;
@@ -3515,6 +3650,20 @@ pub(crate) async fn run_turn(
 
     sess.maybe_start_ghost_snapshot(Arc::clone(&turn_context), cancellation_token.child_token())
         .await;
+    for call in explicit_mcp_tool_calls {
+        let call_id = format!("explicit-mcp-{}", Uuid::new_v4());
+        let output = handle_mcp_tool_call(
+            Arc::clone(&sess),
+            turn_context.as_ref(),
+            call_id,
+            call.server,
+            call.tool,
+            call.raw_arguments,
+        )
+        .await;
+        sess.record_conversation_items(turn_context.as_ref(), &[output.into()])
+            .await;
+    }
     let mut last_agent_message: Option<String> = None;
     // Although from the perspective of codex.rs, TurnDiffTracker has the lifecycle of a Task which contains
     // many turns, from the perspective of the user, it is a single turn.
@@ -3644,6 +3793,46 @@ async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) 
     } else {
         run_inline_auto_compact_task(Arc::clone(sess), Arc::clone(turn_context)).await;
     }
+}
+
+fn extract_explicit_mcp_tool_calls_from_input(
+    input: &[UserInput],
+) -> (Vec<UserInput>, Vec<ExplicitMcpToolCall>) {
+    let mut cleaned = Vec::with_capacity(input.len());
+    let mut calls = Vec::new();
+
+    for item in input {
+        match item {
+            UserInput::Text { text, .. } => {
+                if !text.contains("@mcp__") {
+                    cleaned.push(item.clone());
+                    continue;
+                }
+
+                let parsed = extract_explicit_mcp_tool_calls(text);
+                if !parsed.warnings.is_empty() {
+                    for warning in &parsed.warnings {
+                        warn!("explicit MCP tool call parse warning: {warning}");
+                    }
+                }
+                calls.extend(parsed.calls);
+                let cleaned_text = parsed.cleaned_text;
+                if cleaned_text.trim().is_empty() {
+                    continue;
+                }
+
+                // Drop UI-only text element spans because their byte ranges no longer match
+                // after removing inline MCP tool call directives.
+                cleaned.push(UserInput::Text {
+                    text: cleaned_text,
+                    text_elements: Vec::new(),
+                });
+            }
+            _ => cleaned.push(item.clone()),
+        }
+    }
+
+    (cleaned, calls)
 }
 
 fn filter_connectors_for_input(
@@ -3807,6 +3996,7 @@ async fn run_sampling_request(
         parallel_tool_calls: model_supports_parallel,
         base_instructions,
         personality: turn_context.personality,
+        max_output_tokens: turn_context.max_output_tokens,
         output_schema: turn_context.final_output_json_schema.clone(),
     };
 
@@ -4313,6 +4503,8 @@ async fn try_run_sampling_request(
         collaboration_mode: Some(collaboration_mode),
         effort: turn_context.client.get_reasoning_effort(),
         summary: turn_context.client.get_reasoning_summary(),
+        max_output_tokens: turn_context.max_output_tokens,
+        history_depth: turn_context.history_depth,
         user_instructions: turn_context.user_instructions.clone(),
         developer_instructions: turn_context.developer_instructions.clone(),
         final_output_json_schema: turn_context.final_output_json_schema.clone(),
@@ -4805,6 +4997,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                is_lazy: false,
             }))
             .await;
 
@@ -4822,6 +5015,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                is_lazy: false,
             }))
             .await;
 
@@ -4908,6 +5102,7 @@ mod tests {
                 conversation_id: ThreadId::default(),
                 history: rollout_items,
                 rollout_path: PathBuf::from("/tmp/resume.jsonl"),
+                is_lazy: false,
             }))
             .await;
 
@@ -5087,6 +5282,12 @@ mod tests {
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
+            max_output_tokens: None,
+            history_depth: None,
+            subagent_model: config.subagent_model.clone(),
+            subagent_effort: config.subagent_reasoning_effort,
+            disallowed_tools: config.disallowed_tools.clone(),
+            terminal_size: None,
             base_instructions: config
                 .base_instructions
                 .clone()
@@ -5170,6 +5371,12 @@ mod tests {
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
+            max_output_tokens: None,
+            history_depth: None,
+            subagent_model: config.subagent_model.clone(),
+            subagent_effort: config.subagent_reasoning_effort,
+            disallowed_tools: config.disallowed_tools.clone(),
+            terminal_size: None,
             base_instructions: config
                 .base_instructions
                 .clone()
@@ -5440,6 +5647,12 @@ mod tests {
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
+            max_output_tokens: None,
+            history_depth: None,
+            subagent_model: config.subagent_model.clone(),
+            subagent_effort: config.subagent_reasoning_effort,
+            disallowed_tools: config.disallowed_tools.clone(),
+            terminal_size: None,
             base_instructions: config
                 .base_instructions
                 .clone()
@@ -5560,6 +5773,12 @@ mod tests {
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
             personality: config.personality,
+            max_output_tokens: None,
+            history_depth: None,
+            subagent_model: config.subagent_model.clone(),
+            subagent_effort: config.subagent_reasoning_effort,
+            disallowed_tools: config.disallowed_tools.clone(),
+            terminal_size: None,
             base_instructions: config
                 .base_instructions
                 .clone()

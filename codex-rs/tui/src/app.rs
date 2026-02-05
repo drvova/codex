@@ -99,6 +99,9 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::unbounded_channel;
 use toml::Value as TomlValue;
+use toml_edit::Array as TomlArray;
+use toml_edit::Item as TomlItem;
+use toml_edit::Value as TomlEditValue;
 
 const EXTERNAL_EDITOR_HINT: &str = "Save and close external editor to continue.";
 const THREAD_EVENT_CHANNEL_CAPACITY: usize = 32768;
@@ -1533,6 +1536,33 @@ impl App {
                 ));
                 tui.frame_requester().schedule_frame();
             }
+            AppEvent::SubmitPromptSuggestion(text) => {
+                self.chat_widget.submit_prompt_suggestion(text);
+            }
+            AppEvent::PrefillPromptSuggestion(text) => {
+                self.chat_widget.prefill_prompt_suggestion(text);
+            }
+            AppEvent::UpdatePromptSuggestionHistoryDepth(history_depth) => {
+                self.chat_widget
+                    .set_prompt_suggestion_history_depth(history_depth);
+                self.chat_widget.submit_op(Op::OverrideTurnContext {
+                    cwd: None,
+                    approval_policy: None,
+                    sandbox_policy: None,
+                    windows_sandbox_level: None,
+                    model: None,
+                    subagent_model: None,
+                    subagent_effort: None,
+                    effort: None,
+                    summary: None,
+                    max_output_tokens: None,
+                    history_depth: Some(history_depth.unwrap_or(0)),
+                    collaboration_mode: None,
+                    personality: None,
+                    disallowed_tools: None,
+                    terminal_size: None,
+                });
+            }
             AppEvent::OpenAppLink {
                 title,
                 description,
@@ -1554,6 +1584,9 @@ impl App {
             AppEvent::FileSearchResult { query, matches } => {
                 self.chat_widget.apply_file_search_result(query, matches);
             }
+            AppEvent::RequestMcpToolsForPopup => {
+                self.chat_widget.request_mcp_tools(false);
+            }
             AppEvent::RateLimitSnapshotFetched(snapshot) => {
                 self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
             }
@@ -1566,6 +1599,14 @@ impl App {
             AppEvent::UpdateModel(model) => {
                 self.chat_widget.set_model(&model);
             }
+            AppEvent::UpdateSubagentModel { model } => {
+                self.config.subagent_model = model.clone();
+                self.chat_widget.set_subagent_model(model);
+            }
+            AppEvent::UpdateSubagentReasoningEffort(effort) => {
+                self.config.subagent_reasoning_effort = effort;
+                self.chat_widget.set_subagent_reasoning_effort(effort);
+            }
             AppEvent::UpdateCollaborationMode(mask) => {
                 self.chat_widget.set_collaboration_mask(mask);
             }
@@ -1575,8 +1616,18 @@ impl App {
             AppEvent::OpenReasoningPopup { model } => {
                 self.chat_widget.open_reasoning_popup(model);
             }
+            AppEvent::OpenSubagentReasoningPopup {
+                preset,
+                model_override,
+            } => {
+                self.chat_widget
+                    .open_subagent_reasoning_popup(preset, model_override);
+            }
             AppEvent::OpenAllModelsPopup { models } => {
                 self.chat_widget.open_all_models_popup(models);
+            }
+            AppEvent::OpenSubagentModelPrompt { initial } => {
+                self.chat_widget.open_subagent_model_prompt(initial);
             }
             AppEvent::OpenFullAccessConfirmation {
                 preset,
@@ -1768,10 +1819,16 @@ impl App {
                                         sandbox_policy: None,
                                         windows_sandbox_level: Some(windows_sandbox_level),
                                         model: None,
+                                        subagent_model: None,
+                                        subagent_effort: None,
                                         effort: None,
                                         summary: None,
+                                        max_output_tokens: None,
+                                        history_depth: None,
                                         collaboration_mode: None,
                                         personality: None,
+                                        disallowed_tools: None,
+                                        terminal_size: None,
                                     },
                                 ));
                                 self.app_event_tx.send(
@@ -1790,10 +1847,16 @@ impl App {
                                         sandbox_policy: Some(preset.sandbox.clone()),
                                         windows_sandbox_level: Some(windows_sandbox_level),
                                         model: None,
+                                        subagent_model: None,
+                                        subagent_effort: None,
                                         effort: None,
                                         summary: None,
+                                        max_output_tokens: None,
+                                        history_depth: None,
                                         collaboration_mode: None,
                                         personality: None,
+                                        disallowed_tools: None,
+                                        terminal_size: None,
                                     },
                                 ));
                                 self.app_event_tx
@@ -2017,10 +2080,16 @@ impl App {
                                 sandbox_policy: None,
                                 windows_sandbox_level: Some(windows_sandbox_level),
                                 model: None,
+                                subagent_model: None,
+                                subagent_effort: None,
                                 effort: None,
                                 summary: None,
+                                max_output_tokens: None,
+                                history_depth: None,
                                 collaboration_mode: None,
                                 personality: None,
+                                disallowed_tools: None,
+                                terminal_size: None,
                             }));
                     }
                 }
@@ -2029,6 +2098,62 @@ impl App {
                     self.chat_widget.add_error_message(format!(
                         "Failed to update experimental features: {err}"
                     ));
+                }
+            }
+            AppEvent::UpdateMcpSearchEnabled { enabled } => {
+                let normalize_tool = |tool: &str| -> String {
+                    tool.chars()
+                        .filter(char::is_ascii_alphanumeric)
+                        .map(|c| c.to_ascii_lowercase())
+                        .collect()
+                };
+                let target = normalize_tool("MCPSearch");
+                let mut disallowed = self.config.disallowed_tools.clone();
+                disallowed.retain(|tool| normalize_tool(tool) != target);
+                if !enabled {
+                    disallowed.push("MCPSearch".to_string());
+                }
+                self.config.disallowed_tools = disallowed.clone();
+                self.chat_widget.set_disallowed_tools(disallowed.clone());
+                self.chat_widget.submit_op(Op::OverrideTurnContext {
+                    cwd: None,
+                    approval_policy: None,
+                    sandbox_policy: None,
+                    windows_sandbox_level: None,
+                    model: None,
+                    subagent_model: None,
+                    subagent_effort: None,
+                    effort: None,
+                    summary: None,
+                    max_output_tokens: None,
+                    history_depth: None,
+                    collaboration_mode: None,
+                    personality: None,
+                    disallowed_tools: Some(disallowed.clone()),
+                    terminal_size: None,
+                });
+
+                let mut builder = ConfigEditsBuilder::new(&self.config.codex_home)
+                    .with_profile(self.active_profile.as_deref());
+                if disallowed.is_empty() {
+                    builder = builder.with_edits(vec![ConfigEdit::ClearPath {
+                        segments: vec!["tools".to_string(), "disallowed_tools".to_string()],
+                    }]);
+                } else {
+                    let mut array = TomlArray::new();
+                    for tool in &disallowed {
+                        array.push(tool.clone());
+                    }
+                    builder = builder.with_edits(vec![ConfigEdit::SetPath {
+                        segments: vec!["tools".to_string(), "disallowed_tools".to_string()],
+                        value: TomlItem::Value(TomlEditValue::Array(array)),
+                    }]);
+                }
+
+                if let Err(err) = builder.apply().await {
+                    tracing::error!(error = %err, "failed to persist MCP search toggle");
+                    self.chat_widget
+                        .add_error_message(format!("Failed to update MCP search settings: {err}"));
                 }
             }
             AppEvent::SkipNextWorldWritableScan => {

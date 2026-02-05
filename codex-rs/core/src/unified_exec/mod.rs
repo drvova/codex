@@ -169,6 +169,7 @@ mod tests {
     use crate::codex::make_session_and_context;
     use crate::protocol::AskForApproval;
     use crate::protocol::SandboxPolicy;
+    use crate::protocol::TerminalSize;
     use crate::unified_exec::ExecCommandRequest;
     use crate::unified_exec::WriteStdinRequest;
     use core_test_support::skip_if_sandbox;
@@ -179,6 +180,7 @@ mod tests {
         let (session, mut turn) = make_session_and_context().await;
         turn.approval_policy = AskForApproval::Never;
         turn.sandbox_policy = SandboxPolicy::DangerFullAccess;
+        turn.terminal_size = Some(TerminalSize { rows: 24, cols: 80 });
         (Arc::new(session), Arc::new(turn))
     }
 
@@ -207,7 +209,7 @@ mod tests {
                     max_output_tokens: None,
                     workdir: None,
                     tty: true,
-                    terminal_size: None,
+                    terminal_size: turn.terminal_size,
                     sandbox_permissions: SandboxPermissions::UseDefault,
                     justification: None,
                     prefix_rule: None,
