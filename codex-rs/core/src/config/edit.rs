@@ -194,6 +194,9 @@ mod document_helpers {
         if !config.enabled {
             entry["enabled"] = value(false);
         }
+        if config.required {
+            entry["required"] = value(true);
+        }
         if let Some(timeout) = config.startup_timeout_sec {
             entry["startup_timeout_sec"] = value(timeout.as_secs_f64());
         }
@@ -1416,6 +1419,7 @@ gpt-5 = "gpt-5.1"
                     cwd: None,
                 },
                 enabled: true,
+                required: false,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -1439,6 +1443,7 @@ gpt-5 = "gpt-5.1"
                     env_http_headers: None,
                 },
                 enabled: false,
+                required: false,
                 disabled_reason: None,
                 startup_timeout_sec: Some(std::time::Duration::from_secs(5)),
                 tool_timeout_sec: None,
@@ -1505,6 +1510,7 @@ foo = { command = "cmd" }
                     cwd: None,
                 },
                 enabled: true,
+                required: false,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -1550,6 +1556,7 @@ foo = { command = "cmd" } # keep me
                     cwd: None,
                 },
                 enabled: false,
+                required: false,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -1594,6 +1601,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
                     cwd: None,
                 },
                 enabled: true,
+                required: false,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,
@@ -1639,6 +1647,7 @@ foo = { command = "cmd" }
                     cwd: None,
                 },
                 enabled: false,
+                required: false,
                 disabled_reason: None,
                 startup_timeout_sec: None,
                 tool_timeout_sec: None,

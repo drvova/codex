@@ -13,6 +13,7 @@ pub mod bash;
 mod client;
 mod client_common;
 pub mod codex;
+pub use codex::SteerInputError;
 mod codex_thread;
 mod compact_remote;
 pub use codex_thread::CodexThread;
@@ -131,7 +132,6 @@ mod user_shell_command;
 pub mod util;
 
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
-pub use client::WEB_SEARCH_ELIGIBLE_HEADER;
 pub use client::X_CODEX_TURN_METADATA_HEADER;
 pub use command_safety::is_dangerous_command;
 pub use command_safety::is_safe_command;
